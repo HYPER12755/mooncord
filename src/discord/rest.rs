@@ -41,7 +41,7 @@ mod streams;
 mod user_settings;
 
 pub use forum::CreatedForumPost;
-pub(in crate::discord) use messages::{MessageCreateRequest, MessageEditRequest};
+pub(crate) use messages::{MessageCreateRequest, MessageEditRequest};
 pub use reactions::ReactionUsersPage;
 
 use super::fingerprint::{ClientFingerprint, discord_channel_referer, discord_rest_headers};

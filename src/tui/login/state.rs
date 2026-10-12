@@ -1,20 +1,20 @@
-use crate::discord::password_auth::{MfaChallenge, MfaMethod};
-
 use super::super::keybindings::KeyBindings;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum LoginScreen {
     ModeSelect,
     TokenInput,
-    PasswordInput,
+    EmailPassword,
     MfaSelect,
     MfaCode,
-    Qr,
+    OauthUrl,
+    Busy,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum PasswordField {
-    Login,
+pub(super) enum FormField {
+    Email,
+    // For email/password: password
     Password,
 }
 
@@ -24,8 +24,15 @@ pub(super) struct LoginState {
     pub(super) notice: Option<String>,
     pub(super) error: Option<String>,
     pub(super) token_input: String,
-    pub(super) password: PasswordViewState,
-    pub(super) qr: QrViewState,
+    pub(super) email: String,
+    pub(super) password: String,
+    pub(super) active_field: FormField,
+    pub(super) in_progress: bool,
+    pub(super) status: String,
+    pub(super) oauth_url: Option<String>,
+    pub(super) mfa_challenge_ticket: Option<String>,
+    /// Whether the email/password screen is in sign-up mode (vs. sign-in).
+    pub(super) signup_mode: bool,
 }
 
 impl Default for LoginState {
@@ -36,69 +43,29 @@ impl Default for LoginState {
             notice: None,
             error: None,
             token_input: String::new(),
-            password: PasswordViewState::default(),
-            qr: QrViewState::default(),
-        }
-    }
-}
-
-pub(super) struct PasswordViewState {
-    pub(super) login: String,
-    pub(super) password: String,
-    pub(super) active_field: PasswordField,
-    pub(super) status: String,
-    pub(super) mfa: Option<MfaChallenge>,
-    pub(super) mfa_method: Option<MfaMethod>,
-    pub(super) mfa_code: String,
-    pub(super) in_progress: bool,
-}
-
-impl PasswordViewState {
-    pub(super) fn reset_sensitive(&mut self) {
-        self.password.clear();
-        self.mfa = None;
-        self.mfa_method = None;
-        self.mfa_code.clear();
-        self.status.clear();
-        self.in_progress = false;
-    }
-}
-
-impl Default for PasswordViewState {
-    fn default() -> Self {
-        Self {
-            login: String::new(),
+            email: String::new(),
             password: String::new(),
-            active_field: PasswordField::Login,
-            status: String::new(),
-            mfa: None,
-            mfa_method: None,
-            mfa_code: String::new(),
+            active_field: FormField::Email,
             in_progress: false,
+            status: String::new(),
+            oauth_url: None,
+            mfa_challenge_ticket: None,
+            signup_mode: false,
         }
-    }
-}
-
-#[derive(Default)]
-pub(super) struct QrViewState {
-    pub(super) status: String,
-    pub(super) bitmap: Option<Vec<Vec<bool>>>,
-    pub(super) pending_user: Option<String>,
-}
-
-impl QrViewState {
-    pub(super) fn reset(&mut self) {
-        self.status.clear();
-        self.bitmap = None;
-        self.pending_user = None;
     }
 }
 
 impl LoginState {
-    pub(super) fn new(notice: Option<String>) -> Self {
-        Self {
-            notice,
-            ..Self::default()
-        }
+    pub(super) fn reset_sensitive(&mut self) {
+        self.password.clear();
+        self.token_input.clear();
+    }
+
+    pub(super) fn reset_form(&mut self) {
+        self.email.clear();
+        self.password.clear();
+        self.token_input.clear();
+        self.active_field = FormField::Email;
+        self.signup_mode = false;
     }
 }

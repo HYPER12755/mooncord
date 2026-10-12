@@ -11,9 +11,10 @@ use std::sync::OnceLock;
 use tokio::sync::mpsc;
 
 use crate::{
+    backend::BackendClient,
     config::NotificationOptions,
     discord::{
-        AppEvent, DiscordClient, SequencedAppEvent, VoiceSoundKind,
+        AppEvent, SequencedAppEvent, VoiceSoundKind,
         ids::{
             Id,
             marker::{GuildMarker, UserMarker},
@@ -36,7 +37,7 @@ const MACOS_NOTIFICATION_BUNDLE_ID: &str = "com.apple.Terminal";
 
 pub(super) struct EffectContext<'a> {
     pub(super) state: &'a mut DashboardState,
-    pub(super) client: &'a DiscordClient,
+    pub(super) client: &'a std::sync::Arc<dyn BackendClient>,
     pub(super) media_runtime: &'a mut DashboardMediaRuntime,
     pub(super) media_decode_tx: &'a mpsc::UnboundedSender<MediaImageDecodeResult>,
 }
@@ -417,7 +418,7 @@ pub(super) fn handle_gateway_closed(state: &mut DashboardState) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, sync::Arc};
 
     use tokio::sync::mpsc;
 
@@ -427,12 +428,40 @@ mod tests {
         guild_create_event, message_history_loaded_event, reaction_users_loaded_event,
     };
     use crate::discord::{
-        AppCommand, AppEvent, ChannelInfo, MemberInfo, MentionInfo, MessageHistoryAfterMode,
-        MessageInfo, MessageUpdateDispatchInfo, MessageUpdateEventFields, ReactionEmoji,
-        ReactionUserInfo, RoleInfo, SequencedAppEvent, VoiceStateInfo,
+        AppCommand, AppEvent, ChannelInfo, DiscordSnapshot, MemberInfo, MentionInfo,
+        MessageHistoryAfterMode, MessageInfo, MessageUpdateDispatchInfo,
+        MessageUpdateEventFields, ReactionEmoji, ReactionUserInfo, RoleInfo, SequencedAppEvent,
+        SnapshotRevision, VoiceStateInfo,
     };
 
     use super::*;
+
+    #[derive(Default)]
+    struct MockClient;
+
+    impl crate::backend::BackendClient for MockClient {
+        fn take_effects(&self) -> tokio::sync::mpsc::Receiver<SequencedAppEvent> {
+            tokio::sync::mpsc::channel(1).1
+        }
+        fn subscribe_snapshots(&self) -> tokio::sync::watch::Receiver<SnapshotRevision> {
+            tokio::sync::watch::channel(SnapshotRevision::default()).1
+        }
+        fn current_discord_snapshot(&self) -> DiscordSnapshot {
+            DiscordSnapshot::default()
+        }
+        fn current_user_id(&self) -> Option<Id<UserMarker>> {
+            None
+        }
+        fn publish_event(
+            &self,
+            _event: AppEvent,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(async {})
+        }
+        fn start(&self) -> tokio::task::JoinHandle<()> {
+            tokio::spawn(async {})
+        }
+    }
 
     #[test]
     fn effect_waits_until_snapshot_revision_catches_up() {
@@ -440,7 +469,7 @@ mod tests {
         let mut media_runtime =
             DashboardMediaRuntime::new(crate::config::ImageProtocolPreference::Auto);
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("token is valid header");
+        let client: Arc<dyn BackendClient> = Arc::new(MockClient);
         let (media_decode_tx, _media_decode_rx) = mpsc::unbounded_channel();
         let mut deferred_effects = VecDeque::new();
 
@@ -767,7 +796,7 @@ mod tests {
 
     fn process_effect_in_default_context(state: &mut DashboardState, event: AppEvent) {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("token is valid header");
+        let client: Arc<dyn BackendClient> = Arc::new(MockClient);
         let mut media_runtime =
             DashboardMediaRuntime::new(crate::config::ImageProtocolPreference::Auto);
         let (media_decode_tx, _media_decode_rx) = mpsc::unbounded_channel();

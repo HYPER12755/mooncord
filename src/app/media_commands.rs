@@ -4,7 +4,6 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 use crate::{
-    DiscordClient,
     discord::{
         AppEvent, AttachmentDownloadId, DownloadAttachmentSource, MediaPlaybackRequestId,
         MediaPlaybackTarget, ProfileAvatarUpload, read_profile_avatar_image,
@@ -15,7 +14,7 @@ use crate::{
 use super::media_adapters;
 
 pub(super) async fn load_attachment_preview(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     url: String,
     permits: Arc<Semaphore>,
 ) {
@@ -43,7 +42,7 @@ pub(super) async fn load_attachment_preview(
 }
 
 pub(super) async fn load_profile_avatar_preview(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     key: String,
     upload: ProfileAvatarUpload,
 ) {
@@ -60,14 +59,14 @@ pub(super) async fn load_profile_avatar_preview(
     }
 }
 
-async fn publish_preview_failure(client: &DiscordClient, url: String, message: String) {
+async fn publish_preview_failure(client: &Arc<dyn BackendClient>, url: String, message: String) {
     logging::error("preview", &message);
     client
         .publish_event(AppEvent::AttachmentPreviewLoadFailed { url, message })
         .await;
 }
 
-pub(super) async fn open_url(client: DiscordClient, url: String) {
+pub(super) async fn open_url(client: Arc<dyn BackendClient>, url: String) {
     if let Err(error) = media_adapters::open_url(&url) {
         let message = format!("open url failed: {error}");
         logging::error("app", &message);
@@ -78,7 +77,7 @@ pub(super) async fn open_url(client: DiscordClient, url: String) {
 }
 
 pub(super) async fn play_media(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     target: MediaPlaybackTarget,
     request_id: Option<MediaPlaybackRequestId>,
 ) {
@@ -101,7 +100,7 @@ pub(super) async fn play_media(
 }
 
 pub(super) async fn download_attachment(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     id: AttachmentDownloadId,
     url: String,
     filename: String,
@@ -134,7 +133,7 @@ pub(super) async fn download_attachment(
 }
 
 async fn publish_download_failure(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     id: AttachmentDownloadId,
     filename: String,
     message: String,

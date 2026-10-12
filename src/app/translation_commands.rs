@@ -1,12 +1,14 @@
+use std::sync::Arc;
+
 use crate::{
-    DiscordClient,
+    backend::BackendClient,
     discord::{AppEvent, TranslationTarget},
     logging,
     translation::TranslationService,
 };
 
 pub(super) async fn translate(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     translation: TranslationService,
     request_id: u64,
     target: TranslationTarget,

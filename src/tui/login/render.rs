@@ -30,46 +30,46 @@ fn render_app_header(frame: &mut Frame) {
     );
 }
 
-use crate::discord::password_auth::MfaMethod;
-
-use super::{
-    state::{LoginScreen, LoginState, PasswordField},
-    terminal_events::mfa_supports,
-};
+use super::state::{LoginScreen, FormField};
+use super::LoginState;
 
 pub(super) fn render(frame: &mut Frame, state: &LoginState) {
     clear_area(frame, frame.area());
     match state.screen {
         LoginScreen::ModeSelect => render_mode_select(frame, state),
         LoginScreen::TokenInput => render_token_input(frame, state),
-        LoginScreen::PasswordInput => render_password_input(frame, state),
-        LoginScreen::MfaSelect => render_mfa_select(frame, state),
-        LoginScreen::MfaCode => render_mfa_code(frame, state),
-        LoginScreen::Qr => render_qr(frame, state),
+        LoginScreen::EmailPassword => render_email_password(frame, state),
+        LoginScreen::MfaSelect | LoginScreen::MfaCode => render_mfa_fallback(frame, state),
+        LoginScreen::OauthUrl => render_oauth_url(frame, state),
+        LoginScreen::Busy => render_busy(frame, state),
     }
     render_app_header(frame);
 }
 
 fn render_mode_select(frame: &mut Frame, state: &LoginState) {
-    let area = centered_rect(72, 18, frame.area());
+    let area = centered_rect(72, 20, frame.area());
     let key_bindings = &state.key_bindings;
 
     let mut lines = vec![
-        Line::from(Span::styled("Discord login", accent_style())),
+        Line::from(Span::styled("Login", accent_style())),
         Line::from(""),
         Line::from("Choose how you want to log in:"),
         Line::from(""),
         choice_line(
             key_bindings.login_token_choice_prefix(),
-            "Use Discord token (paste an existing token)",
+            "Use existing Supabase JWT token (paste a token)",
         ),
         choice_line(
             key_bindings.login_password_choice_prefix(),
-            "Login with email/phone and password",
+            "Email / password",
         ),
         choice_line(
-            key_bindings.login_qr_choice_prefix(),
-            "Login with QR code (scan with the mobile app)",
+            key_bindings.login_github_choice_prefix(),
+            "GitHub OAuth (opens browser)",
+        ),
+        choice_line(
+            key_bindings.login_google_choice_prefix(),
+            "Google OAuth (opens browser)",
         ),
         Line::from(""),
     ];
@@ -135,47 +135,32 @@ fn render_token_input(frame: &mut Frame, state: &LoginState) {
     render_wrapped_login_panel(frame, area, " Token ", lines);
 }
 
-fn render_password_input(frame: &mut Frame, state: &LoginState) {
-    let area = centered_rect(82, 18, frame.area());
+fn render_email_password(frame: &mut Frame, state: &LoginState) {
+    let area = centered_rect(82, 16, frame.area());
     let key_bindings = &state.key_bindings;
-    let password_mask = mask_chars(&state.password.password);
-    let login_active = state.password.active_field == PasswordField::Login;
-    let password_active = state.password.active_field == PasswordField::Password;
-    let login_style = if login_active {
-        active_style()
-    } else {
-        dim_style()
-    };
-    let password_style = if password_active {
-        active_style()
-    } else {
-        dim_style()
-    };
-    let login_marker = if login_active { "> " } else { "  " };
+    let password_mask = mask_chars(&state.password);
+    let email_active = state.active_field == FormField::Email;
+    let password_active = state.active_field == FormField::Password;
+    let email_style = if email_active { active_style() } else { dim_style() };
+    let password_style = if password_active { active_style() } else { dim_style() };
+    let email_marker = if email_active { "> " } else { "  " };
     let password_marker = if password_active { "> " } else { "  " };
 
+    let mode_label = if state.signup_mode {
+        "Email / password signup"
+    } else {
+        "Email / password login"
+    };
+
     let mut lines = vec![
-        Line::from(Span::styled("Email/password login", accent_style())),
+        Line::from(Span::styled(mode_label, accent_style())),
         Line::from(""),
-        error_line("Warning: Email/password login may cause a temporary account restriction."),
-        error_line("Use it with caution. Token login is recommended."),
-        Line::from(""),
-        Line::from("Credentials are used only to request a Discord token."),
-        Line::from("They are not saved. Captcha is not supported here."),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(format!("{login_marker}Email/phone  "), login_style),
-            Span::styled(state.password.login.clone(), login_style),
-        ]),
-        Line::from(vec![
-            Span::styled(format!("{password_marker}Password     "), password_style),
-            Span::styled(password_mask, password_style),
-        ]),
+        Line::from("Use your Supabase Auth credentials."),
         Line::from(""),
     ];
 
-    if state.password.in_progress && !state.password.status.is_empty() {
-        lines.push(notice_line(&state.password.status));
+    if state.in_progress {
+        lines.push(notice_line(&state.status));
     } else if let Some(error) = &state.error {
         lines.push(error_line(error));
     } else {
@@ -183,146 +168,93 @@ fn render_password_input(frame: &mut Frame, state: &LoginState) {
     }
 
     lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{email_marker}Email    "), email_style),
+        Span::styled(state.email.clone(), email_style),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(format!("{password_marker}Password "), password_style),
+        Span::styled(password_mask, password_style),
+    ]));
+    lines.push(Line::from(""));
+
     lines.push(Line::from(Span::styled(
         key_bindings.login_password_input_label(),
         dim_style(),
     )));
 
-    render_wrapped_login_panel(frame, area, " Email Login ", lines);
-}
-
-fn render_mfa_select(frame: &mut Frame, state: &LoginState) {
-    let area = centered_rect(82, 16, frame.area());
-    let key_bindings = &state.key_bindings;
-    let mut lines = vec![
-        Line::from(Span::styled("Multi-factor authentication", accent_style())),
-        Line::from(""),
-        Line::from("Discord requires another verification step."),
-        Line::from(""),
-    ];
-
-    if mfa_supports(&state.password.mfa, MfaMethod::Totp) {
-        lines.push(choice_line(
-            key_bindings.login_totp_choice_prefix(),
-            "Use TOTP authenticator code",
-        ));
-    }
-    if mfa_supports(&state.password.mfa, MfaMethod::Sms) {
-        lines.push(choice_line(
-            key_bindings.login_sms_choice_prefix(),
-            "Send SMS verification code",
-        ));
-    }
-    lines.push(Line::from(""));
-
-    if state.password.in_progress && !state.password.status.is_empty() {
-        lines.push(notice_line(&state.password.status));
-    } else if let Some(error) = &state.error {
-        lines.push(error_line(error));
-    } else if !state.password.status.is_empty() {
-        lines.push(Line::from(Span::raw(state.password.status.clone())));
-    } else {
-        lines.push(Line::from(""));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        key_bindings.login_back_quit_label(),
-        dim_style(),
-    )));
-
-    render_wrapped_login_panel(frame, area, " MFA ", lines);
-}
-
-pub(super) fn render_mfa_code(frame: &mut Frame, state: &LoginState) {
-    let area = centered_rect(82, 15, frame.area());
-    let key_bindings = &state.key_bindings;
-    let method = match state.password.mfa_method {
-        Some(MfaMethod::Totp) => "TOTP code",
-        Some(MfaMethod::Sms) => "SMS code",
-        None => "MFA code",
-    };
-    let mut lines = vec![
-        Line::from(Span::styled("Multi-factor authentication", accent_style())),
-        Line::from(""),
-        Line::from(state.password.status.clone()),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(format!("{method}  "), active_style()),
-            Span::styled(mask_chars(&state.password.mfa_code), active_style()),
-        ]),
-        Line::from(""),
-    ];
-
-    if let Some(error) = &state.error {
-        lines.push(error_line(error));
-    } else {
-        lines.push(Line::from(""));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        key_bindings.login_mfa_code_label(),
-        dim_style(),
-    )));
-
-    render_wrapped_login_panel(frame, area, " MFA Code ", lines);
-}
-
-fn render_qr(frame: &mut Frame, state: &LoginState) {
-    let area = frame.area();
-    let key_bindings = &state.key_bindings;
-
-    let mut lines = vec![
-        Line::from(Span::styled("Discord QR login", accent_style())),
-        Line::from(""),
-    ];
-
-    if let Some(bitmap) = &state.qr.bitmap {
-        for row_pair in bitmap.chunks(2) {
-            let top = &row_pair[0];
-            let bottom = row_pair.get(1);
-            let mut line = String::with_capacity(top.len());
-            for x in 0..top.len() {
-                let upper = top[x];
-                let lower = bottom.map(|row| row[x]).unwrap_or(false);
-                let ch = match (upper, lower) {
-                    (true, true) => '█',
-                    (true, false) => '▀',
-                    (false, true) => '▄',
-                    (false, false) => ' ',
-                };
-                line.push(ch);
-            }
-            lines.push(Line::from(Span::styled(line, Style::default())));
-        }
-        lines.push(Line::from(""));
-    }
-
-    if !state.qr.status.is_empty() {
-        lines.push(Line::from(Span::raw(state.qr.status.clone())));
-    }
-    if let Some(user) = &state.qr.pending_user {
-        lines.push(Line::from(""));
+    if state.signup_mode {
         lines.push(Line::from(Span::styled(
-            format!("Confirming login as {user}"),
-            theme::current().style(theme::HighlightGroup::Success),
+            "[Shift+S] Back to login (toggle signup mode)",
+            dim_style(),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "[Shift+S] Toggle signup mode (create new account)",
+            dim_style(),
         )));
     }
 
+    render_wrapped_login_panel(frame, area, " Email Login ", lines);
+}
+
+fn render_busy(frame: &mut Frame, state: &LoginState) {
+    let area = centered_rect(72, 10, frame.area());
+    let key_bindings = &state.key_bindings;
+
+    let lines = vec![
+        Line::from(Span::styled("Login", accent_style())),
+        Line::from(""),
+        Line::from(Span::raw(state.status.clone())),
+        Line::from(""),
+        Line::from(Span::styled(
+            key_bindings.login_cancel_quit_label(),
+            dim_style(),
+        )),
+    ];
+
+    render_wrapped_login_panel(frame, area, " Login ", lines);
+}
+
+fn render_oauth_url(frame: &mut Frame, state: &LoginState) {
+    let area = centered_rect(72, 14, frame.area());
+    let key_bindings = &state.key_bindings;
+
+    let lines = vec![
+        Line::from(Span::styled("OAuth login", accent_style())),
+        Line::from(""),
+        Line::from("Open this URL in your browser to authorize:"),
+        Line::from(""),
+        Line::from(Span::raw(state.oauth_url.clone().unwrap_or_default())),
+        Line::from(""),
+        Line::from("Press Enter once you've completed authorization, or Esc to cancel."),
+        Line::from(""),
+        Line::from(Span::styled(
+            key_bindings.login_back_quit_label(),
+            dim_style(),
+        )),
+    ];
+
+    render_wrapped_login_panel(frame, area, " OAuth ", lines);
+}
+
+fn render_mfa_fallback(frame: &mut Frame, state: &LoginState) {
+    let area = centered_rect(72, 10, frame.area());
+    let mut lines = vec![
+        Line::from(Span::styled("Login", accent_style())),
+        Line::from(""),
+        Line::from("Multi-factor authentication is not supported in this login flow."),
+        Line::from(""),
+    ];
+    if let Some(error) = &state.error {
+        lines.push(error_line(error));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        key_bindings.login_cancel_quit_label(),
+        "Esc back | Ctrl-C quit",
         dim_style(),
     )));
-
-    clear_area(frame, area);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .alignment(Alignment::Center)
-            .block(login_block(" QR Login ")),
-        area,
-    );
+    render_wrapped_login_panel(frame, area, " Login ", lines);
 }
 
 fn render_wrapped_login_panel(
@@ -350,7 +282,7 @@ fn dim_style() -> Style {
 }
 
 fn active_style() -> Style {
-    theme::current().style(theme::HighlightGroup::ActiveField)
+    theme::current().style(theme::HighlightGroup::Strong)
 }
 
 fn error_line(value: impl AsRef<str>) -> Line<'static> {
@@ -363,7 +295,7 @@ fn error_line(value: impl AsRef<str>) -> Line<'static> {
 fn notice_line(value: impl AsRef<str>) -> Line<'static> {
     Line::from(Span::styled(
         value.as_ref().to_owned(),
-        theme::current().style(theme::HighlightGroup::Warning),
+        theme::current().style(theme::HighlightGroup::Strong),
     ))
 }
 

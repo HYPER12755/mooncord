@@ -14,7 +14,7 @@ mod rest_actions;
 use crate::discord::VoiceParticipantPlaybackSettings;
 use crate::discord::ids::{
     Id,
-    marker::{ChannelMarker, GuildMarker, UserMarker},
+    marker::{ChannelMarker, GuildMarker, MessageMarker, UserMarker},
 };
 use reqwest::header::HeaderValue;
 use tokio::{
@@ -26,7 +26,7 @@ use tokio::{
 use crate::{AppError, Result};
 
 use super::{
-    ActivityInfo, ApplicationCommandAutocompleteInvocation, ApplicationCommandInfo,
+    ActivityInfo, AppCommand, ApplicationCommandAutocompleteInvocation, ApplicationCommandInfo,
     ApplicationCommandInvocation, DiscordAction, DiscordAuthSession, DiscordPermission,
     PresenceStatus, RichPresenceSelection,
     application_commands::{
@@ -52,7 +52,7 @@ const DISCORD_LOCAL_APPLICATION_ID: &str = "-1";
 const GATEWAY_COMMAND_CHANNEL_CLOSED: &str = "gateway command channel closed";
 const VOICE_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(8);
 
-type ApplicationCommandCache = HashMap<Option<Id<GuildMarker>>, Vec<ApplicationCommandInfo>>;
+pub(crate) type ApplicationCommandCache = HashMap<Option<Id<GuildMarker>>, Vec<ApplicationCommandInfo>>;
 type MemberListRange = (u32, u32);
 type MemberListSubscriptionRequest = (
     Id<GuildMarker>,
@@ -70,7 +70,7 @@ type DueMemberListSubscription = (
 );
 
 #[derive(Clone, Debug)]
-pub(crate) struct AppEventPublisher {
+pub struct AppEventPublisher {
     effects_tx: mpsc::Sender<SequencedAppEvent>,
     snapshots_tx: watch::Sender<SnapshotRevision>,
     state: Arc<RwLock<DiscordState>>,
@@ -80,6 +80,50 @@ pub(crate) struct AppEventPublisher {
     application_commands: Arc<Mutex<ApplicationCommandCache>>,
     request_lifecycle: Arc<Mutex<RequestLifecycle>>,
     voice_events_tx: mpsc::UnboundedSender<VoiceRuntimeEvent>,
+}
+
+impl AppEventPublisher {
+    /// Factory for backend modules that want to reuse the same event-publishing
+    /// pipeline as the Gateway backend. Creates a publisher wired to the same
+    /// DiscordState, revision, and snapshot watch channel.
+    pub fn new_for_backend(
+        effects_tx: mpsc::Sender<SequencedAppEvent>,
+        snapshots_tx: watch::Sender<SnapshotRevision>,
+        state: Arc<RwLock<DiscordState>>,
+        revision: Arc<RwLock<SnapshotRevision>>,
+        publish_lock: Arc<AsyncMutex<()>>,
+        application_command_requests: Arc<Mutex<HashMap<Option<Id<GuildMarker>>, RequestState>>>,
+        application_commands: Arc<Mutex<ApplicationCommandCache>>,
+        request_lifecycle: Arc<Mutex<RequestLifecycle>>,
+        voice_events_tx: mpsc::UnboundedSender<VoiceRuntimeEvent>,
+    ) -> Self {
+        Self {
+            effects_tx,
+            snapshots_tx,
+            state,
+            revision,
+            publish_lock,
+            application_command_requests,
+            application_commands,
+            request_lifecycle,
+            voice_events_tx,
+        }
+    }
+
+    /// Wrapper for backend modules that emit events via reference instead of
+    /// by value (the primary `publish` in lifecycle.rs calls `prepare` and takes
+    /// ownership, which the backend doesn't need).
+    pub async fn publish_for_backend(&self, event: &AppEvent) {
+        publish_app_event(
+            &self.effects_tx,
+            &self.snapshots_tx,
+            &self.state,
+            &self.revision,
+            &self.publish_lock,
+            event,
+        )
+        .await;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -119,7 +163,7 @@ impl DiscordClient {
         Self::new_with_fingerprint(token, Arc::new(ClientFingerprint::new(CLIENT_BUILD_NUMBER)))
     }
 
-    pub(crate) fn new_with_fingerprint(
+    pub fn new_with_fingerprint(
         token: String,
         fingerprint: Arc<ClientFingerprint>,
     ) -> Result<Self> {
@@ -127,7 +171,7 @@ impl DiscordClient {
         Self::new_with_fingerprint_and_http(token, fingerprint, http)
     }
 
-    pub(crate) fn new_with_auth_session(
+    pub fn new_with_auth_session(
         token: String,
         auth_session: DiscordAuthSession,
     ) -> Result<Self> {
@@ -210,7 +254,7 @@ impl DiscordClient {
     /// Test-only access to the gateway command stream, so sibling modules (for
     /// example the RPC tests) can observe presence updates the client sends.
     #[cfg(test)]
-    pub(crate) fn take_gateway_commands_for_test(&self) -> mpsc::UnboundedReceiver<GatewayCommand> {
+    pub fn take_gateway_commands_for_test(&self) -> mpsc::UnboundedReceiver<GatewayCommand> {
         self.gateway_commands_rx
             .lock()
             .expect("gateway command receiver mutex is not poisoned")
@@ -237,7 +281,7 @@ impl DiscordClient {
         self.read_state().current_user_id()
     }
 
-    pub(crate) fn update_rest_page_referer(&self, channel_id: Option<Id<ChannelMarker>>) {
+    pub fn update_rest_page_referer(&self, channel_id: Option<Id<ChannelMarker>>) {
         let channel = channel_id.and_then(|channel_id| {
             self.read_state()
                 .channel(channel_id)
@@ -670,14 +714,14 @@ impl DiscordClient {
         Ok(())
     }
 
-    pub(crate) fn update_voice_audio_sources(&self, sources: VoiceAudioSources) {
+    pub fn update_voice_audio_sources(&self, sources: VoiceAudioSources) {
         let _ = self
             .voice_events_tx
             .send(VoiceRuntimeEvent::AudioSourcesChanged(sources));
     }
 
     #[cfg(feature = "voice-playback")]
-    pub(crate) fn set_push_to_talk_enabled(&self, enabled: bool) {
+    pub fn set_push_to_talk_enabled(&self, enabled: bool) {
         let mut current = self
             .push_to_talk
             .write()
@@ -692,7 +736,7 @@ impl DiscordClient {
     }
 
     #[cfg(feature = "voice-playback")]
-    pub(crate) fn set_push_to_talk_pressed(&self, pressed: bool) {
+    pub fn set_push_to_talk_pressed(&self, pressed: bool) {
         let _ = self
             .voice_events_tx
             .send(VoiceRuntimeEvent::PushToTalkPressed(pressed));
@@ -865,7 +909,7 @@ impl DiscordClient {
         self.rich_presence_dirty.notify_one();
     }
 
-    pub(crate) fn rich_presence_dirty(&self) -> Arc<Notify> {
+    pub fn rich_presence_dirty(&self) -> Arc<Notify> {
         Arc::clone(&self.rich_presence_dirty)
     }
 
@@ -1199,7 +1243,7 @@ fn query_hash(guild_id: Id<GuildMarker>, query: &str, limit: u16) -> u64 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RequestState {
+pub(crate) enum RequestState {
     Requested(u64),
     Loaded,
 }
@@ -1286,5 +1330,226 @@ fn is_discord_default_application(command: &ApplicationCommandInfo) -> bool {
             .is_some_and(|name| name.eq_ignore_ascii_case("Discord"))
 }
 
-#[cfg(test)]
-mod tests;
+impl crate::backend::BackendClient for DiscordClient {
+    fn take_effects(&self) -> mpsc::Receiver<SequencedAppEvent> {
+        self.take_effects()
+    }
+
+    fn subscribe_snapshots(&self) -> watch::Receiver<SnapshotRevision> {
+        self.subscribe_snapshots()
+    }
+
+    fn current_discord_snapshot(&self) -> DiscordSnapshot {
+        self.current_discord_snapshot()
+    }
+
+    fn current_user_id(&self) -> Option<Id<UserMarker>> {
+        self.current_user_id()
+    }
+
+    fn current_user_rpc_identity(&self) -> Option<(String, String)> {
+        self.current_user_rpc_identity()
+    }
+
+    fn publish_event(&self, event: AppEvent) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(self.publish_event(event))
+    }
+
+    fn start(&self) -> tokio::task::JoinHandle<()> {
+        self.start_gateway(true)
+    }
+
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async {
+            let _ = self.shutdown_voice_runtime().await;
+            let _ = self.shutdown_gateway();
+        })
+    }
+
+    fn set_guild_member_search_target(
+        &self,
+        surface: crate::discord::GuildMemberSearchSurface,
+        guild_id: Option<Id<GuildMarker>>,
+        query: Option<&str>,
+        now: Instant,
+    ) {
+        self.set_guild_member_search_target(surface, guild_id, query, now);
+    }
+
+    fn next_due_guild_member_search(
+        &self,
+        surface: crate::discord::GuildMemberSearchSurface,
+        now: Instant,
+    ) -> Option<(Id<GuildMarker>, String)> {
+        self.next_due_guild_member_search(surface, now)
+    }
+
+    fn guild_member_search_deadline(
+        &self,
+        surface: crate::discord::GuildMemberSearchSurface,
+    ) -> Option<Instant> {
+        self.guild_member_search_deadline(surface)
+    }
+
+    fn set_member_list_subscription_target(
+        &self,
+        target: Option<(
+            Id<GuildMarker>,
+            Id<ChannelMarker>,
+            Option<Id<ChannelMarker>>,
+            u32,
+            u64,
+            Vec<(u32, u32)>,
+        )>,
+        now: Instant,
+    ) {
+        self.set_member_list_subscription_target(target, now);
+    }
+
+    fn next_due_member_list_subscription(
+        &self,
+        now: Instant,
+    ) -> Option<(Id<GuildMarker>, Id<ChannelMarker>, Option<Id<ChannelMarker>>, Vec<(u32, u32)>)> {
+        self.next_due_member_list_subscription(now).map(|t| t)
+    }
+
+    fn member_list_subscription_deadline(&self) -> Option<Instant> {
+        self.member_list_subscription_deadline()
+    }
+
+    fn next_read_ack_deadline(&self) -> Option<Instant> {
+        self.next_read_ack_deadline()
+    }
+
+    fn due_read_ack_commands(&self, now: Instant) -> Vec<AppCommand> {
+        self.due_read_ack_commands(now)
+    }
+
+    fn next_presence_sync(&self) -> Option<Instant> {
+        None
+    }
+
+    fn mark_presence_sync_failed(&self) {}
+
+    fn next_thread_preview_requests(
+        &self,
+        missing: Vec<(Id<ChannelMarker>, Id<MessageMarker>)>,
+    ) -> Vec<(Id<ChannelMarker>, Id<MessageMarker>)> {
+        self.next_thread_preview_requests(missing)
+    }
+
+    fn remove_thread_preview_request(&self, channel_id: Id<ChannelMarker>, message_id: Id<MessageMarker>) {
+        self.remove_thread_preview_request((channel_id, message_id));
+    }
+
+    fn next_pinned_message_request(&self, channel_id: Option<Id<ChannelMarker>>) -> Option<Id<ChannelMarker>> {
+        self.next_pinned_message_request(channel_id)
+    }
+
+    fn mark_pinned_message_request_failed(&self, channel_id: Id<ChannelMarker>) {
+        self.mark_pinned_message_request_failed(channel_id);
+    }
+
+    fn next_forum_post_data_request(
+        &self,
+        target: Option<crate::discord::ForumPostDataRequestTarget>,
+    ) -> Option<crate::discord::ForumPostDataRequestTarget> {
+        self.next_forum_post_data_request(target)
+    }
+
+    fn mark_forum_post_data_request_failed(
+        &self,
+        channel_id: Id<ChannelMarker>,
+        thread_ids: &[Id<ChannelMarker>],
+    ) {
+        self.mark_forum_post_data_request_failed(channel_id, thread_ids);
+    }
+
+    fn next_archived_thread_request(
+        &self,
+        target: Option<crate::discord::ArchivedThreadRequestTarget>,
+    ) -> Option<crate::discord::ArchivedThreadRequestTarget> {
+        self.next_archived_thread_request(target)
+    }
+
+    fn mark_archived_thread_request_send_failed(
+        &self,
+        channel_id: Id<ChannelMarker>,
+        cursor: &crate::discord::ArchivedThreadPageCursor,
+    ) {
+        self.mark_archived_thread_request_send_failed(channel_id, cursor);
+    }
+
+    fn next_member_hydration_requests(
+        &self,
+        missing: Vec<(Id<GuildMarker>, Vec<Id<UserMarker>>)>,
+        now: Instant,
+    ) -> Vec<(Id<GuildMarker>, Vec<Id<UserMarker>>)> {
+        self.next_member_hydration_requests(missing, now)
+    }
+
+    fn next_message_history_request(
+        &self,
+        channel_id: Option<Id<ChannelMarker>>,
+        force_reload: bool,
+    ) -> Option<Id<ChannelMarker>> {
+        self.next_message_history_request(channel_id, force_reload)
+    }
+
+    fn mark_message_history_request_failed(&self, channel_id: Id<ChannelMarker>) {
+        self.mark_message_history_request_failed(channel_id);
+    }
+
+    fn set_push_to_talk_enabled(&self, _enabled: bool) {
+        #[cfg(feature = "voice-playback")]
+        {
+            self.set_push_to_talk_enabled(_enabled);
+        }
+    }
+
+    fn set_push_to_talk_pressed(&self, _pressed: bool) {
+        #[cfg(feature = "voice-playback")]
+        {
+            self.set_push_to_talk_pressed(_pressed);
+        }
+    }
+
+    fn request_guild_members_by_ids(&self, guild_id: Id<GuildMarker>, user_ids: &[Id<UserMarker>]) {
+        let _ = self.request_guild_members_by_ids(guild_id, user_ids.to_vec());
+    }
+
+    fn search_guild_members(&self, guild_id: Id<GuildMarker>, query: &str) {
+        let _ = self.search_guild_members(guild_id, query.to_string(), 200);
+    }
+
+    fn subscribe_direct_message(&self, channel_id: Id<ChannelMarker>) {
+        let _ = self.subscribe_direct_message(channel_id);
+    }
+
+    fn subscribe_guild_channel(&self, guild_id: Id<GuildMarker>, channel_id: Id<ChannelMarker>) {
+        let _ = self.subscribe_guild_channel(guild_id, channel_id);
+    }
+
+    fn validate_token_authentication(&self, token: &str) -> crate::Result<crate::backend::AuthenticatedUser> {
+        crate::discord::client::validate_token_header(token)
+            .map(|_| crate::backend::AuthenticatedUser {
+                id: self.current_user_id().map(|id| id.to_string()).unwrap_or_default(),
+                email: None,
+                display_name: None,
+                avatar_url: None,
+            })
+            .map_err(|_| crate::error::AppError::NotLoggedIn)
+    }
+
+    fn take_gateway_commands_for_test(&self) -> tokio::sync::mpsc::UnboundedReceiver<GatewayCommand> {
+        #[cfg(test)]
+        {
+            self.take_gateway_commands_for_test()
+        }
+        #[cfg(not(test))]
+        {
+            panic!("GatewayCommand access is only available in tests")
+        }
+    }
+}
+

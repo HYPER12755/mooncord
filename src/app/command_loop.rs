@@ -1,30 +1,11 @@
-use tokio::sync::mpsc;
+use std::sync::Arc;
 
 use crate::{
-    DiscordClient, config,
-    discord::{AppCommand, AppEvent},
+    discord::AppEvent,
     error::AppError,
     logging,
-    translation::TranslationService,
+    backend::BackendClient,
 };
-
-use super::command_dispatch::CommandDispatcher;
-
-pub(super) fn start_command_loop(
-    client: DiscordClient,
-    mut commands: mpsc::Receiver<AppCommand>,
-    translation_options: config::TranslationOptions,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let dispatcher = CommandDispatcher::new(
-            client,
-            TranslationService::from_options(translation_options),
-        );
-        while let Some(command) = commands.recv().await {
-            dispatcher.dispatch(command).await;
-        }
-    })
-}
 
 pub(super) fn log_app_error(context: &str, error: &AppError) {
     logging::error(
@@ -33,10 +14,12 @@ pub(super) fn log_app_error(context: &str, error: &AppError) {
     );
 }
 
-pub(super) async fn publish_app_error(client: &DiscordClient, context: &str, error: &AppError) {
+pub(super) async fn publish_app_error(
+    client: &Arc<dyn BackendClient>,
+    context: &str,
+    error: &AppError,
+) {
     log_app_error(context, error);
-    // A captcha gate is not a connection failure, so it gets its own event
-    // instead of the persistent gateway-error banner.
     let event = match error {
         AppError::CaptchaRequired { action } => AppEvent::CaptchaRequired {
             action: action.clone(),

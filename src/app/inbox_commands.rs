@@ -1,10 +1,10 @@
 use crate::discord::ids::{Id, marker::MessageMarker};
-use crate::{DiscordClient, discord::AppEvent, logging};
+use crate::{backend::BackendClient, discord::AppEvent, logging};
 
 const INBOX_PAGE_LIMIT: u16 = 25;
 
 pub(super) async fn load_mentions(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     request_id: u64,
     before: Option<Id<MessageMarker>>,
 ) {
@@ -29,7 +29,7 @@ pub(super) async fn load_mentions(
     }
 }
 
-pub(super) async fn delete_mention(client: DiscordClient, message_id: Id<MessageMarker>) {
+pub(super) async fn delete_mention(client: Arc<dyn BackendClient>, message_id: Id<MessageMarker>) {
     match client.delete_recent_mention(message_id).await {
         Ok(()) => {
             client

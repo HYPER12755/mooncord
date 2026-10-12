@@ -1,9 +1,10 @@
-#[cfg(test)]
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
-use std::time::Duration;
 
 use global_hotkey::hotkey::HotKey;
 #[cfg(any(test, target_os = "linux"))]
@@ -13,7 +14,7 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 #[cfg(target_os = "linux")]
 use tokio::task::JoinHandle;
 
-use crate::{config::VoiceOptions, discord::DiscordClient, logging};
+use crate::{backend::BackendClient, config::VoiceOptions, logging};
 
 const PUSH_TO_TALK_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -74,7 +75,7 @@ struct PushToTalkConfiguration {
 }
 
 pub(super) struct GlobalPushToTalkRuntime {
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     configuration: Option<PushToTalkConfiguration>,
     backend: Option<PushToTalkBackend>,
     pressed: bool,
@@ -100,7 +101,7 @@ enum PushToTalkBackend {
 }
 
 impl GlobalPushToTalkRuntime {
-    pub(super) fn new(client: DiscordClient) -> Self {
+    pub(super) fn new(client: Arc<dyn BackendClient>) -> Self {
         Self {
             client,
             configuration: None,
@@ -590,8 +591,17 @@ fn xdg_key_name(code: Code) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::discord::{
+        AppEvent, SequencedAppEvent, SnapshotRevision, VoiceStateInfo,
+        ids::{Id, marker::{ChannelMarker, GuildMarker, UserMarker}},
+    };
     use crate::tui::keybindings::push_to_talk_shortcut_from_key;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    #[derive(Default)]
+    struct MockClient;
+
+    impl crate::backend::BackendClient for MockClient {}
 
     #[test]
     fn shortcut_matcher_tracks_press_and_release() {
@@ -646,7 +656,7 @@ mod tests {
     #[test]
     fn dropping_runtime_cleans_up_the_active_backend() {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("token is valid header");
+        let client: Arc<dyn BackendClient> = Arc::new(MockClient);
         let cleaned_up = Arc::new(AtomicBool::new(false));
         let mut runtime = GlobalPushToTalkRuntime::new(client);
         runtime.backend = Some(PushToTalkBackend::TestCleanup(Arc::clone(&cleaned_up)));

@@ -71,7 +71,7 @@ pub struct ThreadListSyncInfo {
     pub extra_fields: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ThreadMemberInfo {
     pub thread_id: Option<Id<ChannelMarker>>,
     pub user_id: Option<Id<UserMarker>>,

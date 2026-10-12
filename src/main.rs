@@ -12,6 +12,7 @@ enum CliCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     install_rustls_crypto_provider();
+    let _ = dotenvy::dotenv();
 
     match cli_command_from_args(std::env::args_os().skip(1)) {
         CliCommand::Run => {}

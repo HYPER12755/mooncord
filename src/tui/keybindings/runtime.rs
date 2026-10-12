@@ -626,7 +626,7 @@ impl KeyBindings {
     pub(in crate::tui) fn login_global_action(&self, key: KeyEvent) -> Option<LoginGlobalAction> {
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                Some(LoginGlobalAction::Cancel)
+                Some(LoginGlobalAction::Quit)
             }
             _ => None,
         }
@@ -640,11 +640,14 @@ impl KeyBindings {
             KeyCode::Char(value) if value.eq_ignore_ascii_case(&'t') => {
                 Some(LoginModeSelectAction::StartToken)
             }
-            KeyCode::Char(value) if value.eq_ignore_ascii_case(&'e') => {
+            KeyCode::Char(value) if value.eq_ignore_ascii_case(&'p') => {
                 Some(LoginModeSelectAction::StartPassword)
             }
-            KeyCode::Char(value) if value.eq_ignore_ascii_case(&'q') => {
-                Some(LoginModeSelectAction::StartQr)
+            KeyCode::Char(value) if value.eq_ignore_ascii_case(&'g') => {
+                Some(LoginModeSelectAction::StartGithub)
+            }
+            KeyCode::Char(value) if value.eq_ignore_ascii_case(&'G') => {
+                Some(LoginModeSelectAction::StartGoogle)
             }
             KeyCode::Esc => Some(LoginModeSelectAction::Cancel),
             _ => None,
@@ -668,6 +671,9 @@ impl KeyBindings {
         match key.code {
             KeyCode::Enter => LoginPasswordInputAction::Submit,
             KeyCode::Tab | KeyCode::Down | KeyCode::Up => LoginPasswordInputAction::SwitchField,
+            KeyCode::Char('S') => {
+                LoginPasswordInputAction::ToggleSignupMode
+            }
             KeyCode::Esc => LoginPasswordInputAction::Back,
             KeyCode::Backspace => LoginPasswordInputAction::DeletePreviousChar,
             KeyCode::Char(value) => LoginPasswordInputAction::InsertChar(value),
@@ -861,11 +867,15 @@ impl KeyBindings {
     }
 
     pub fn login_password_choice_prefix(&self) -> &'static str {
-        "[e] "
+        "[p] "
     }
 
-    pub fn login_qr_choice_prefix(&self) -> &'static str {
-        "[q] "
+    pub fn login_github_choice_prefix(&self) -> &'static str {
+        "[g] "
+    }
+
+    pub fn login_google_choice_prefix(&self) -> &'static str {
+        "[G] "
     }
 
     pub fn login_totp_choice_prefix(&self) -> &'static str {
@@ -885,7 +895,7 @@ impl KeyBindings {
     }
 
     pub fn login_password_input_label(&self) -> &'static str {
-        "Tab switch field | Enter login | Esc back | Ctrl-C quit"
+        "Tab switch | Shift+S signup | Enter login | Esc back | Ctrl-C quit"
     }
 
     pub fn login_back_quit_label(&self) -> &'static str {

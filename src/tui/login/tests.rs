@@ -6,28 +6,14 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::discord::password_auth::{MfaChallenge, MfaMethod};
-
 use super::{
-    render::{render, render_mfa_code},
+    render,
     state::{LoginScreen, LoginState},
     terminal_events::{LoginAction, handle_terminal},
 };
 
 fn press(code: KeyCode) -> TerminalEvent {
     TerminalEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
-}
-
-fn paste(text: &str) -> TerminalEvent {
-    TerminalEvent::Paste(text.to_owned())
-}
-
-fn mfa_challenge(methods: Vec<MfaMethod>) -> MfaChallenge {
-    MfaChallenge {
-        ticket: "ticket".to_string(),
-        login_instance_id: "login-instance".to_string(),
-        methods,
-    }
 }
 
 #[test]
@@ -176,75 +162,4 @@ fn token_input_accepts_bracketed_paste_text() {
     handle_terminal(&mut state, paste("token-part-1\ntoken-part-2"));
 
     assert_eq!(state.token_input, "token-part-1token-part-2");
-}
-
-#[test]
-fn mfa_code_submit_starts_verify_and_clears_code_field() {
-    let mut state = LoginState::new(None);
-    state.screen = LoginScreen::MfaCode;
-    state.password.mfa = Some(mfa_challenge(vec![MfaMethod::Totp]));
-    state.password.mfa_method = Some(MfaMethod::Totp);
-    state.password.mfa_code = " 123456 ".to_string();
-
-    let action = handle_terminal(&mut state, press(KeyCode::Enter));
-
-    assert!(matches!(
-        action,
-        Some(LoginAction::StartMfaVerify { method, code, ticket, login_instance_id })
-            if method == MfaMethod::Totp
-                && code == "123456"
-                && ticket == "ticket"
-                && login_instance_id == "login-instance"
-    ));
-    assert!(state.password.mfa_code.is_empty());
-}
-
-#[test]
-fn mfa_code_esc_while_verifying_returns_to_valid_password_screen() {
-    let mut state = LoginState::new(None);
-    state.screen = LoginScreen::MfaCode;
-    state.error = Some("old error".to_string());
-    state.password.in_progress = true;
-    state.password.status = "Verifying multi-factor authentication...".to_string();
-    state.password.mfa = Some(mfa_challenge(vec![MfaMethod::Totp]));
-    state.password.mfa_method = Some(MfaMethod::Totp);
-    state.password.mfa_code = "123456".to_string();
-
-    let action = handle_terminal(&mut state, press(KeyCode::Esc));
-
-    assert!(matches!(action, Some(LoginAction::CancelPasswordLogin)));
-    assert!(state.screen == LoginScreen::PasswordInput);
-    assert!(state.error.is_none());
-
-    state.password.reset_sensitive();
-    assert!(state.screen == LoginScreen::PasswordInput);
-    assert!(state.password.mfa.is_none());
-    assert!(state.password.mfa_method.is_none());
-    assert!(state.password.mfa_code.is_empty());
-    assert!(!state.password.in_progress);
-}
-
-#[test]
-fn mfa_code_render_masks_entered_code() {
-    let backend = TestBackend::new(82, 15);
-    let mut terminal = Terminal::new(backend).expect("test terminal should build");
-    let mut state = LoginState::new(None);
-    state.screen = LoginScreen::MfaCode;
-    state.password.status = "Enter MFA code".to_string();
-    state.password.mfa_method = Some(MfaMethod::Totp);
-    state.password.mfa_code = "123456".to_string();
-
-    terminal
-        .draw(|frame| render_mfa_code(frame, &state))
-        .expect("render should succeed");
-    let rendered = terminal
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|cell| cell.symbol())
-        .collect::<String>();
-
-    assert!(!rendered.contains("123456"));
-    assert!(rendered.contains("••••••"));
 }

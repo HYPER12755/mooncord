@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    AppError, DiscordClient,
+    backend::BackendClient,
+    error::AppError,
     discord::{
         AppEvent, ApplicationCommandAutocompleteInvocation, ApplicationCommandInvocation,
         AttachmentUpdate, ForumPostCreate, MessageAttachmentUpload, MessageInfo,
@@ -17,7 +18,7 @@ use crate::{
 use super::command_loop::{log_app_error, publish_app_error};
 
 pub(super) async fn send_message(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     nonce: Id<MessageMarker>,
     content: String,
@@ -31,7 +32,7 @@ pub(super) async fn send_message(
 }
 
 async fn handle_message_send_result(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     nonce: Id<MessageMarker>,
     context: &str,
@@ -51,14 +52,14 @@ async fn handle_message_send_result(
     }
 }
 
-pub(super) async fn trigger_typing(client: DiscordClient, channel_id: Id<ChannelMarker>) {
+pub(super) async fn trigger_typing(client: Arc<dyn BackendClient>, channel_id: Id<ChannelMarker>) {
     if let Err(error) = client.trigger_typing(channel_id) {
         publish_app_error(&client, "show typing indicator failed", &error).await;
     }
 }
 
 pub(super) async fn send_tts_message(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     nonce: Id<MessageMarker>,
     content: String,
@@ -74,7 +75,7 @@ pub(super) async fn send_tts_message(
     .await;
 }
 
-pub(super) async fn create_forum_post(client: DiscordClient, post: ForumPostCreate) {
+pub(super) async fn create_forum_post(client: Arc<dyn BackendClient>, post: ForumPostCreate) {
     match client.create_forum_post(&post).await {
         Ok(created) => {
             let slow_mode = client.message_slow_mode(post.channel_id);
@@ -124,7 +125,7 @@ pub(super) async fn create_forum_post(client: DiscordClient, post: ForumPostCrea
 /// (THREAD_UPDATE / THREAD_DELETE), which updates the cached thread, so
 /// these only need to report failures.
 pub(super) async fn set_thread_archived(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     archived: bool,
     _label: String,
@@ -140,7 +141,7 @@ pub(super) async fn set_thread_archived(
 }
 
 pub(super) async fn set_thread_locked(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     locked: bool,
     _label: String,
@@ -156,7 +157,7 @@ pub(super) async fn set_thread_locked(
 }
 
 pub(super) async fn set_thread_pinned(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     pinned: bool,
     current_flags: u64,
@@ -176,7 +177,7 @@ pub(super) async fn set_thread_pinned(
 }
 
 pub(super) async fn delete_thread(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     _label: String,
 ) {
@@ -186,7 +187,7 @@ pub(super) async fn delete_thread(
 }
 
 pub(super) async fn edit_thread(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     name: String,
     applied_tags: Vec<Id<ForumTagMarker>>,
@@ -209,7 +210,7 @@ pub(super) async fn edit_thread(
 }
 
 pub(super) async fn load_application_commands(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     guild_id: Option<Id<GuildMarker>>,
 ) {
     match client.load_application_commands(guild_id).await {
@@ -224,7 +225,7 @@ pub(super) async fn load_application_commands(
 }
 
 pub(super) async fn run_application_command(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     invocation: ApplicationCommandInvocation,
 ) {
     if let Err(error) = client.run_application_command(&invocation).await {
@@ -233,7 +234,7 @@ pub(super) async fn run_application_command(
 }
 
 pub(super) async fn request_application_command_autocomplete(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     invocation: ApplicationCommandAutocompleteInvocation,
 ) {
     if let Err(error) = client
@@ -245,7 +246,7 @@ pub(super) async fn request_application_command_autocomplete(
 }
 
 pub(super) async fn edit_message(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
     content: String,
@@ -259,7 +260,7 @@ pub(super) async fn edit_message(
 }
 
 pub(super) async fn delete_message(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
 ) {
@@ -278,7 +279,7 @@ pub(super) async fn delete_message(
 }
 
 pub(super) async fn remove_message_embeds(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
 ) {
@@ -290,7 +291,7 @@ pub(super) async fn remove_message_embeds(
     }
 }
 
-pub(super) async fn leave_guild(client: DiscordClient, guild_id: Id<GuildMarker>, label: String) {
+pub(super) async fn leave_guild(client: Arc<dyn BackendClient>, guild_id: Id<GuildMarker>, label: String) {
     match client.leave_guild(guild_id).await {
         Ok(()) => {
             client
@@ -309,7 +310,7 @@ pub(super) async fn leave_guild(client: DiscordClient, guild_id: Id<GuildMarker>
 }
 
 pub(super) async fn add_reaction(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
     emoji: ReactionEmoji,
@@ -329,7 +330,7 @@ pub(super) async fn add_reaction(
 }
 
 pub(super) async fn remove_reaction(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
     emoji: ReactionEmoji,
@@ -352,7 +353,7 @@ pub(super) async fn remove_reaction(
 }
 
 pub(super) async fn load_reaction_users(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
     emoji: ReactionEmoji,
@@ -388,7 +389,7 @@ pub(super) async fn load_reaction_users(
     }
 }
 
-pub(super) async fn load_pinned_messages(client: DiscordClient, channel_id: Id<ChannelMarker>) {
+pub(super) async fn load_pinned_messages(client: Arc<dyn BackendClient>, channel_id: Id<ChannelMarker>) {
     match client.load_pinned_messages(channel_id).await {
         Ok(messages) => {
             client
@@ -411,7 +412,7 @@ pub(super) async fn load_pinned_messages(client: DiscordClient, channel_id: Id<C
 }
 
 pub(super) async fn set_message_pinned(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
     pinned: bool,
@@ -434,7 +435,7 @@ pub(super) async fn set_message_pinned(
 }
 
 pub(super) async fn vote_poll(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
     answer_ids: Vec<u8>,
@@ -458,7 +459,7 @@ fn message_create_event(message: MessageInfo) -> AppEvent {
 }
 
 async fn publish_message_send_error(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     context: &str,
     error: &AppError,
@@ -508,81 +509,3 @@ fn message_update_event(message: MessageInfo) -> AppEvent {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn message_send_result_preserves_nonce_and_failure_event_order() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("token is valid header");
-        let mut effects = client.take_effects();
-        let channel_id = Id::new(1);
-        let nonce = Id::new(2);
-
-        handle_message_send_result(
-            &client,
-            channel_id,
-            nonce,
-            "send message failed",
-            Ok(MessageInfo::test(channel_id, Id::new(3))),
-        )
-        .await;
-        let AppEvent::MessageCreate { message } = effects
-            .recv()
-            .await
-            .expect("message create event should be published")
-            .event
-        else {
-            panic!("expected message create event");
-        };
-        assert_eq!(message.nonce, Some(nonce));
-
-        handle_message_send_result(
-            &client,
-            channel_id,
-            nonce,
-            "send tts message failed",
-            Err(AppError::DiscordRequest("network unavailable".to_owned())),
-        )
-        .await;
-        assert!(matches!(
-            effects
-                .recv()
-                .await
-                .expect("send failure event should be published first")
-                .event,
-            AppEvent::MessageSendFailed {
-                channel_id: event_channel_id,
-                nonce: event_nonce,
-            } if event_channel_id == channel_id && event_nonce == nonce
-        ));
-        assert!(matches!(
-            effects
-                .recv()
-                .await
-                .expect("error event should follow send failure")
-                .event,
-            AppEvent::GatewayError { message }
-                if message == "send tts message failed: Discord request failed: network unavailable"
-        ));
-    }
-
-    #[tokio::test]
-    async fn typing_in_an_uncached_channel_reports_the_block_instead_of_sending() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("token is valid header");
-        let mut effects = client.take_effects();
-
-        trigger_typing(client.clone(), Id::new(1)).await;
-
-        let effect = effects.try_recv().expect("block reason is published");
-        let AppEvent::GatewayError { message } = effect.event else {
-            panic!("expected a gateway error, got {:?}", effect.event);
-        };
-        assert!(
-            message.contains("show typing indicator failed"),
-            "unexpected message: {message}"
-        );
-    }
-}

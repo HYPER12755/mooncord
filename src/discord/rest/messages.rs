@@ -18,12 +18,12 @@ use crate::{
 
 use super::{DiscordRest, clone_array, extra_fields, rest_error_kind};
 
-pub(in crate::discord) enum MessageEditRequest<'a> {
+pub(crate) enum MessageEditRequest<'a> {
     Content(&'a str),
     Flags(u64),
 }
 
-pub(in crate::discord) struct MessageCreateRequest<'a> {
+pub(crate) struct MessageCreateRequest<'a> {
     pub nonce: Id<MessageMarker>,
     pub content: &'a str,
     pub reply_to: Option<ReplyReference>,

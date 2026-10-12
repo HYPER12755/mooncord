@@ -1,10 +1,10 @@
-use crate::{
-    DiscordClient, Result, config, discord::AppEvent, error::AppError, logging, token_store,
-};
+use std::sync::Arc;
+
+use crate::backend::BackendClient;
 
 use super::command_loop::publish_app_error;
 
-pub(super) async fn sign_out(client: DiscordClient) {
+pub(super) async fn sign_out(client: Arc<dyn BackendClient>) {
     match delete_saved_credentials().await {
         Ok(()) => client.publish_event(AppEvent::SignedOut).await,
         Err(error) => publish_app_error(&client, "sign out failed", &error).await,

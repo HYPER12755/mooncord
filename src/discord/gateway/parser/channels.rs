@@ -175,6 +175,10 @@ fn parse_thread_metadata(value: &Value) -> Option<ThreadMetadataInfo> {
             .get("create_timestamp")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        before: value
+            .get("before")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 

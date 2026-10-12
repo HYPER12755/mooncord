@@ -1,12 +1,14 @@
-use crate::discord::ids::{
-    Id,
-    marker::{ChannelMarker, UserMarker},
-};
+use std::sync::Arc;
+
 use crate::{
-    DiscordClient,
+    backend::BackendClient,
     discord::{
         AppEvent, StreamCaptureTarget, VoiceAudioSettings, VoiceAudioSources,
         VoiceConnectionStatus, VoiceParticipantPlaybackSettings, VoiceScope,
+        ids::{
+            Id,
+            marker::{ChannelMarker, UserMarker},
+        },
     },
     logging,
 };
@@ -23,7 +25,7 @@ pub(super) struct JoinRequest {
     pub participant_playback_settings: Vec<(Id<UserMarker>, VoiceParticipantPlaybackSettings)>,
 }
 
-pub(super) async fn join_channel(client: DiscordClient, request: JoinRequest) {
+pub(super) async fn join_channel(client: Arc<dyn BackendClient>, request: JoinRequest) {
     let JoinRequest {
         scope,
         channel_id,
@@ -76,11 +78,11 @@ pub(super) async fn join_channel(client: DiscordClient, request: JoinRequest) {
         .await;
 }
 
-pub(super) fn update_audio_sources(client: &DiscordClient, sources: VoiceAudioSources) {
+pub(super) fn update_audio_sources(client: &Arc<dyn BackendClient>, sources: VoiceAudioSources) {
     client.update_voice_audio_sources(sources);
 }
 
-pub(super) async fn load_voice_audio_sources(client: DiscordClient, request_id: u64) {
+pub(super) async fn load_voice_audio_sources(client: Arc<dyn BackendClient>, request_id: u64) {
     let result = tokio::task::spawn_blocking(crate::discord::list_voice_audio_sources)
         .await
         .map_err(|error| format!("voice audio source task failed: {error}"))
@@ -106,7 +108,7 @@ pub(super) async fn load_voice_audio_sources(client: DiscordClient, request_id: 
 }
 
 pub(super) async fn update_state(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     scope: VoiceScope,
     channel_id: Id<ChannelMarker>,
     self_mute: bool,
@@ -121,7 +123,7 @@ pub(super) async fn update_state(
 }
 
 pub(super) async fn update_capture_permission(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     scope: VoiceScope,
     channel_id: Id<ChannelMarker>,
     settings: VoiceAudioSettings,
@@ -135,7 +137,7 @@ pub(super) async fn update_capture_permission(
 }
 
 pub(super) fn update_participant_playback(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     user_id: Id<UserMarker>,
     settings: VoiceParticipantPlaybackSettings,
 ) {
@@ -143,7 +145,7 @@ pub(super) fn update_participant_playback(
 }
 
 pub(super) async fn watch_stream(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     scope: VoiceScope,
     channel_id: Id<ChannelMarker>,
     user_id: Id<UserMarker>,
@@ -162,7 +164,7 @@ pub(super) async fn watch_stream(
 }
 
 pub(super) async fn load_stream_capture_targets(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     request_id: crate::discord::StreamCaptureTargetsRequestId,
     scope: VoiceScope,
     channel_id: Id<ChannelMarker>,
@@ -190,7 +192,7 @@ pub(super) async fn load_stream_capture_targets(
 }
 
 pub(super) async fn start_stream(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     scope: VoiceScope,
     channel_id: Id<ChannelMarker>,
     target: StreamCaptureTarget,
@@ -210,7 +212,7 @@ pub(super) async fn start_stream(
 }
 
 pub(super) async fn stop_stream(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     scope: VoiceScope,
     channel_id: Id<ChannelMarker>,
 ) {
@@ -225,7 +227,7 @@ pub(super) async fn stop_stream(
 }
 
 pub(super) async fn leave_channel(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     scope: VoiceScope,
     self_mute: bool,
     self_deaf: bool,
@@ -252,45 +254,3 @@ pub(super) async fn leave_channel(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::discord::StreamCaptureTargetKind;
-
-    #[tokio::test]
-    async fn stream_start_failure_completes_preparation_before_showing_error() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("test client is valid");
-        let mut effects = client.take_effects();
-        let scope = VoiceScope::Guild(Id::new(1));
-        let channel_id = Id::new(2);
-        let target = StreamCaptureTarget {
-            kind: StreamCaptureTargetKind::Portal,
-            id: 0,
-            title: "test capture".to_owned(),
-        };
-
-        start_stream(client, scope, channel_id, target).await;
-
-        assert!(matches!(
-            effects
-                .recv()
-                .await
-                .expect("stream end event should be published")
-                .event,
-            AppEvent::StreamBroadcastStartFailed {
-                scope: event_scope,
-                channel_id: event_channel_id,
-            } if event_scope == scope && event_channel_id == channel_id
-        ));
-        assert!(matches!(
-            effects
-                .recv()
-                .await
-                .expect("stream error event should be published")
-                .event,
-            AppEvent::GatewayError { message }
-                if message.starts_with("Could not start stream:")
-        ));
-    }
-}

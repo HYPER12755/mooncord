@@ -9,7 +9,6 @@ use tokio::process::Command as TokioCommand;
 use tokio::time::{Duration, Instant as TokioInstant, sleep, timeout};
 
 use crate::{
-    DiscordClient,
     discord::{AppEvent, AttachmentDownloadId, DownloadAttachmentSource, MediaPlaybackRequestId},
     logging,
     support::media_player::MediaPlayerIpcEndpoint,
@@ -84,7 +83,7 @@ pub(super) async fn fetch_attachment_preview(url: &str) -> std::result::Result<V
 }
 
 pub(super) async fn download_attachment(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     id: AttachmentDownloadId,
     url: &str,
     filename: &str,
@@ -247,7 +246,7 @@ fn open_url_command(url: &str) -> Command {
 }
 
 pub(super) async fn play_media(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     request_id: MediaPlaybackRequestId,
     url: &str,
     label: &str,
@@ -273,7 +272,7 @@ pub(super) async fn play_media(
 async fn monitor_media_player_window(
     mut child: tokio::process::Child,
     ipc_endpoint: MediaPlayerIpcEndpoint,
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     request_id: MediaPlaybackRequestId,
     url: String,
     label: String,

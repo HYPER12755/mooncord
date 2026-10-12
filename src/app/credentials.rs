@@ -1,31 +1,27 @@
 use crate::{
-    DiscordClient, Result, config,
-    discord::{DiscordAuthSession, validate_token_header},
+    backend::{SupabaseAuthSession, SessionTokens},
+    config,
     error::AppError,
-    logging, token_store, tui,
+    logging,
+    Result,
+    token_store,
+    tui,
 };
 
 pub(super) struct ResolvedToken {
-    pub(super) token: String,
+    pub(super) tokens: SessionTokens,
     pub(super) warnings: Vec<String>,
 }
 
-pub(super) async fn resolve_token(auth_session: DiscordAuthSession) -> Result<ResolvedToken> {
+pub(super) async fn resolve_token(auth_session: SupabaseAuthSession) -> Result<ResolvedToken> {
     let mut login_notice = None;
     let mut post_login_warnings = Vec::new();
 
     if let Some(token) = token_store::env_token() {
-        validate_token_header(&token)?;
-        if let Err(error) = validate_token_with_discord(&token, auth_session.clone()).await {
-            match error {
-                AppError::DiscordTokenRejected => return Err(AppError::DiscordTokenRejected),
-                error => post_login_warnings.push(format!(
-                    "CONCORD_TOKEN could not be verified: {error}; continuing with it for this session"
-                )),
-            }
-        }
+        validate_supabase_token(&token)?;
+        let tokens = SessionTokens::from_jwt_string(&token);
         return Ok(ResolvedToken {
-            token,
+            tokens,
             warnings: post_login_warnings,
         });
     }
@@ -36,154 +32,124 @@ pub(super) async fn resolve_token(auth_session: DiscordAuthSession) -> Result<Re
             let warning = format!(
                 "config could not be loaded for credential settings: {error}; using auto credential storage"
             );
+            post_login_warnings.push(warning);
             login_notice =
                 Some("Credential storage is unavailable; token may not be saved.".to_owned());
-            post_login_warnings.push(warning);
-            config::CredentialStoreMode::default()
+            config::CredentialStoreMode::Auto
         }
     };
 
     match load_token_from_store(credential_store).await {
-        Ok(Some(token)) => {
-            if let Err(error) = validate_token_header(&token) {
-                report_login_error(
-                    &mut login_notice,
-                    format!("saved Discord token is invalid: {error}; enter a new token"),
-                    "Saved Discord token is invalid; enter a new token.",
-                );
-                delete_rejected_saved_token(credential_store, &mut post_login_warnings).await;
-            } else if let Err(error) =
-                validate_token_with_discord(&token, auth_session.clone()).await
-            {
+        Ok(Some(tokens)) => {
+            if let Err(error) = validate_supabase_token(&tokens.access_token) {
                 match error {
-                    AppError::DiscordTokenRejected => {
-                        report_login_error(
-                            &mut login_notice,
-                            "saved Discord token was rejected by Discord; enter a new token",
-                            "Saved Discord token was rejected; enter a new token.",
-                        );
-                        delete_rejected_saved_token(credential_store, &mut post_login_warnings)
-                            .await;
+                    AppError::SupabaseAuth(msg) => {
+                        return Err(AppError::SupabaseAuth(
+                            format!("stored token rejected: {msg}"),
+                        ));
                     }
-                    error => report_login_error(
-                        &mut login_notice,
-                        format!(
-                            "saved Discord token could not be verified: {error}; enter a token to continue"
-                        ),
-                        "Could not verify the saved token with Discord; log in again.",
-                    ),
+                    error => post_login_warnings.push(format!(
+                        "Stored token could not be verified: {error}; re-prompting for login"
+                    )),
                 }
             } else {
-                return Ok(ResolvedToken {
-                    token,
-                    warnings: post_login_warnings,
-                });
+                // Verify against the Supabase auth server
+                match auth_session
+                    .get_current_user(Some(&tokens.access_token))
+                    .await
+                {
+                    Ok(_) => return Ok(ResolvedToken {
+                        tokens,
+                        warnings: post_login_warnings,
+                    }),
+                    Err(error) => post_login_warnings.push(format!(
+                        "Stored token verification failed: {error}; re-prompting for login"
+                    )),
+                }
             }
         }
         Ok(None) => {}
         Err(error) => {
             let warning = format!(
-                "credential store unavailable: {error}; enter a token to continue for this session"
+                "credential store was unavailable: {error}; falling back to interactive login"
             );
-            login_notice =
-                Some("Credential storage is unavailable; token may not be saved.".to_owned());
             post_login_warnings.push(warning);
         }
     }
 
-    let token = loop {
-        // The login UI owns this notice for one attempt. A successful attempt
-        // drops it instead of carrying the resolved error into the dashboard.
-        let token =
-            tui::prompt_login_with_auth_session(login_notice.take(), auth_session.clone()).await?;
-        if let Err(error) = validate_token_header(&token) {
-            report_login_error(
-                &mut login_notice,
-                format!("entered Discord token is invalid: {error}; enter a new token"),
-                "That Discord token is invalid; enter a different token.",
-            );
-            continue;
-        }
-        match validate_token_with_discord(&token, auth_session.clone()).await {
-            Ok(()) => break token,
-            Err(AppError::DiscordTokenRejected) => {
-                report_login_error(
-                    &mut login_notice,
-                    "entered Discord token was rejected by Discord; enter a different token",
-                    "Discord rejected that token; enter a different token.",
-                );
-            }
-            Err(error) => {
-                report_login_error(
-                    &mut login_notice,
-                    format!("Discord token could not be verified: {error}; try again"),
-                    "Could not verify the token with Discord; try again.",
-                );
+    let login_result = tui::prompt_login_with_supabase(
+        login_notice,
+        post_login_warnings.clone(),
+        auth_session,
+    )
+    .await?;
+    let tokens = login_result;
+    let warnings = post_login_warnings.clone();
+
+    match credential_store {
+        config::CredentialStoreMode::Auto | config::CredentialStoreMode::Keychain => {
+            if let Err(error) = save_token_to_store(&tokens.access_token, credential_store).await {
+                logging::error("credentials", format!(
+                    "could not save token to credential store: {error}"
+                ));
             }
         }
-    };
-    match save_token_to_store(token.clone(), credential_store).await {
-        Ok(token_store::TokenSaveLocation::PlaintextFile)
-            if credential_store == config::CredentialStoreMode::Auto =>
-        {
-            post_login_warnings.push(
-                "system keychain is unavailable; token was saved to the plaintext fallback credential store"
-                    .to_owned(),
-            );
+        config::CredentialStoreMode::Plain => {
+            if let Err(error) = save_token_to_store(&tokens.access_token, credential_store).await {
+                logging::error("credentials", format!(
+                    "could not save token to credential store: {error}"
+                ));
+            }
         }
-        Ok(_) => {}
-        Err(error) => post_login_warnings.push(format!("token was not saved: {error}")),
     }
 
     Ok(ResolvedToken {
-        token,
-        warnings: post_login_warnings,
+        tokens,
+        warnings,
     })
 }
 
-fn report_login_error(
-    login_notice: &mut Option<String>,
-    detail: impl AsRef<str>,
-    notice: impl Into<String>,
-) {
-    logging::error("app", detail.as_ref());
-    *login_notice = Some(notice.into());
+/// Validate a Supabase JWT by checking structure and expiry.
+fn validate_supabase_token(token: &str) -> Result<()> {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err(AppError::DiscordTokenRejected);
+    }
+    let payload = base64_url_decode(parts[1])?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload)
+        .map_err(|_| AppError::DiscordTokenRejected)?;
+    let exp = claims.get("exp").and_then(|v| v.as_u64()).unwrap_or(0);
+    let now = chrono::Utc::now().timestamp() as u64;
+    if exp < now {
+        return Err(AppError::DiscordTokenRejected);
+    }
+    Ok(())
 }
 
-async fn validate_token_with_discord(token: &str, auth_session: DiscordAuthSession) -> Result<()> {
-    DiscordClient::new_with_auth_session(token.to_owned(), auth_session)?
-        .validate_token_authentication()
-        .await
+fn base64_url_decode(input: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(input)
+        .map_err(|_| AppError::DiscordTokenRejected)
 }
 
-async fn load_token_from_store(store: config::CredentialStoreMode) -> Result<Option<String>> {
-    tokio::task::spawn_blocking(move || token_store::load_token(store))
-        .await
-        .map_err(|source| AppError::CredentialStoreTask { source })?
+async fn load_token_from_store(
+    store: config::CredentialStoreMode,
+) -> Result<Option<SessionTokens>> {
+    let token_string = token_store::load_token(store)?;
+    match token_string {
+        Some(token) => {
+            let tokens = SessionTokens::from_jwt_string(&token);
+            Ok(Some(tokens))
+        }
+        None => Ok(None),
+    }
 }
 
 async fn save_token_to_store(
-    token: String,
+    token: &str,
     store: config::CredentialStoreMode,
-) -> Result<token_store::TokenSaveLocation> {
-    tokio::task::spawn_blocking(move || token_store::save_token(&token, store))
-        .await
-        .map_err(|source| AppError::CredentialStoreTask { source })?
-}
-
-async fn delete_token_from_store(store: config::CredentialStoreMode) -> Result<()> {
-    tokio::task::spawn_blocking(move || token_store::delete_token(store))
-        .await
-        .map_err(|source| AppError::CredentialStoreTask { source })?
-}
-
-async fn delete_rejected_saved_token(
-    store: config::CredentialStoreMode,
-    warnings: &mut Vec<String>,
-) {
-    if let Err(error) = delete_token_from_store(store).await {
-        warnings.push(format!(
-            "rejected saved token could not be deleted: {error}"
-        ));
-    }
+) -> Result<()> {
+    token_store::save_token(token, store)?;
+    Ok(())
 }

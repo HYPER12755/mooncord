@@ -1323,7 +1323,7 @@ impl BroadcastPacketEncryptor {
 
     fn take_nonce(&self, packet_kind: &str) -> Result<[u8; 4], String> {
         self.nonce_suffix
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |nonce| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |nonce| {
                 nonce.checked_add(1)
             })
             .map(u32::to_be_bytes)

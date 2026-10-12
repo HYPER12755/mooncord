@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 
 use crate::discord::ids::{
@@ -5,7 +7,7 @@ use crate::discord::ids::{
     marker::{ChannelMarker, GuildMarker},
 };
 use crate::{
-    DiscordClient,
+    backend::BackendClient,
     discord::{AppCommand, GuildMemberSearchSurface},
 };
 
@@ -21,7 +23,7 @@ impl DashboardCommandScheduler {
     pub(super) async fn schedule_state_driven_commands(
         &mut self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         commands: &mpsc::Sender<AppCommand>,
     ) -> bool {
         let mut dirty = false;
@@ -75,7 +77,7 @@ impl DashboardCommandScheduler {
     async fn schedule_member_search(
         &self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         commands: &mpsc::Sender<AppCommand>,
         surface: GuildMemberSearchSurface,
         query: Option<&str>,
@@ -101,7 +103,7 @@ impl DashboardCommandScheduler {
     async fn schedule_message_history(
         &mut self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         commands: &mpsc::Sender<AppCommand>,
         dirty: &mut bool,
     ) {
@@ -172,7 +174,7 @@ impl DashboardCommandScheduler {
     async fn schedule_pinned_messages(
         &mut self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         commands: &mpsc::Sender<AppCommand>,
         dirty: &mut bool,
     ) {
@@ -194,7 +196,7 @@ impl DashboardCommandScheduler {
     async fn schedule_forum_post_data(
         &mut self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         commands: &mpsc::Sender<AppCommand>,
         dirty: &mut bool,
     ) {
@@ -223,7 +225,7 @@ impl DashboardCommandScheduler {
     async fn schedule_archived_threads(
         &mut self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         commands: &mpsc::Sender<AppCommand>,
         dirty: &mut bool,
     ) {
@@ -255,7 +257,7 @@ impl DashboardCommandScheduler {
     async fn schedule_member_requests(
         &mut self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         now: std::time::Instant,
         dirty: &mut bool,
     ) {
@@ -269,7 +271,7 @@ impl DashboardCommandScheduler {
     async fn schedule_thread_previews(
         &mut self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         commands: &mpsc::Sender<AppCommand>,
         dirty: &mut bool,
     ) {
@@ -287,7 +289,7 @@ impl DashboardCommandScheduler {
             .await
             .is_channel_closed()
             {
-                client.remove_thread_preview_request((channel_id, latest_message_id));
+                client.remove_thread_preview_request(channel_id, latest_message_id);
                 *dirty = true;
             }
         }
@@ -296,7 +298,7 @@ impl DashboardCommandScheduler {
     async fn schedule_member_list_subscription(
         &mut self,
         state: &mut DashboardState,
-        client: &DiscordClient,
+        client: &Arc<dyn BackendClient>,
         commands: &mpsc::Sender<AppCommand>,
         now: std::time::Instant,
         dirty: &mut bool,
@@ -342,7 +344,38 @@ impl DashboardCommandScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::discord::test_builders::{GuildCreateFixture, guild_create_event};
+    use crate::discord::ids::{Id, marker::UserMarker};
+    use crate::discord::{
+        AppEvent, DiscordSnapshot, SequencedAppEvent, SnapshotRevision,
+        test_builders::{GuildCreateFixture, guild_create_event},
+    };
+
+    #[derive(Default)]
+    struct MockClient;
+
+    impl crate::backend::BackendClient for MockClient {
+        fn take_effects(&self) -> tokio::sync::mpsc::Receiver<SequencedAppEvent> {
+            tokio::sync::mpsc::channel(1).1
+        }
+        fn subscribe_snapshots(&self) -> tokio::sync::watch::Receiver<SnapshotRevision> {
+            tokio::sync::watch::channel(SnapshotRevision::default()).1
+        }
+        fn current_discord_snapshot(&self) -> DiscordSnapshot {
+            DiscordSnapshot::default()
+        }
+        fn current_user_id(&self) -> Option<Id<UserMarker>> {
+            None
+        }
+        fn publish_event(
+            &self,
+            _event: AppEvent,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(async {})
+        }
+        fn start(&self) -> tokio::task::JoinHandle<()> {
+            tokio::spawn(async {})
+        }
+    }
 
     #[tokio::test]
     async fn member_search_surfaces_schedule_independent_limits() {
@@ -351,7 +384,7 @@ mod tests {
         let mut state = DashboardState::new();
         state.push_event(guild_create_event(GuildCreateFixture::new(guild_id)));
         assert!(state.confirm_selected_guild());
-        let client = DiscordClient::new("test-token".to_owned()).expect("token is valid header");
+        let client: Arc<dyn BackendClient> = Arc::new(MockClient);
         let (commands, mut command_rx) = mpsc::channel(4);
         let scheduler = DashboardCommandScheduler::default();
         let mut now = std::time::Instant::now();

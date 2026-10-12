@@ -26,6 +26,17 @@ pub struct DiscordSnapshot {
     pub detail: DetailSnapshot,
 }
 
+impl Default for DiscordSnapshot {
+    fn default() -> Self {
+        Self {
+            revision: SnapshotRevision::default(),
+            navigation: NavigationSnapshot::default(),
+            message: MessageSnapshot::default(),
+            detail: DetailSnapshot::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct NavigationSnapshot {
     pub(in crate::discord) navigation: Arc<NavigationIndex>,
@@ -37,14 +48,44 @@ pub struct NavigationSnapshot {
     pub(in crate::discord) threads: Arc<ThreadCache>,
 }
 
+impl Default for NavigationSnapshot {
+    fn default() -> Self {
+        Self {
+            navigation: Arc::new(NavigationIndex::default()),
+            guild_details: Arc::new(GuildDetailCache::default()),
+            profiles: Arc::new(ProfileCache::default()),
+            presence: Arc::new(PresenceCache::default()),
+            voice: Arc::new(VoiceStateCache::default()),
+            session: Arc::new(SessionState::default()),
+            threads: Arc::new(ThreadCache::default()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MessageSnapshot {
     pub(in crate::discord) message_cache: Arc<MessageCache>,
 }
 
+impl Default for MessageSnapshot {
+    fn default() -> Self {
+        Self {
+            message_cache: Arc::new(MessageCache::default()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DetailSnapshot {
     pub(in crate::discord) notifications: Arc<NotificationCache>,
+}
+
+impl Default for DetailSnapshot {
+    fn default() -> Self {
+        Self {
+            notifications: Arc::new(NotificationCache::default()),
+        }
+    }
 }
 
 impl SnapshotRevision {

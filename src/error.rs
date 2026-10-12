@@ -8,8 +8,12 @@ pub type Result<T> = std::result::Result<T, AppError>;
 
 #[derive(Debug, Error)]
 pub enum AppError {
-    #[error("login cancelled before a Discord token was saved")]
+    #[error("login cancelled before a Supabase JWT token was saved")]
     LoginCancelled,
+    #[error("not logged in")]
+    NotLoggedIn,
+    #[error("config could not be loaded: {0}")]
+    ConfigLoad(String),
     #[error("Discord token must not be empty")]
     EmptyDiscordToken,
     #[error("Discord token is not a valid HTTP authorization header")]
@@ -89,6 +93,14 @@ pub enum AppError {
     QrLogin(String),
     #[error("QR login was cancelled in the Discord mobile app")]
     QrLoginCancelled,
+    #[error("HTTP request error: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("Supabase auth error: {0}")]
+    SupabaseAuth(String),
+    #[error("Supabase function error: {0}")]
+    SupabaseFunction(String),
+    #[error("not implemented for this backend")]
+    NotImplemented,
 }
 
 impl AppError {

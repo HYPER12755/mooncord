@@ -7,8 +7,9 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     Result, config,
+    backend::BackendClient,
     discord::{
-        AppCommand, AppEvent, DiscordClient, GuildMemberSearchSurface, SequencedAppEvent,
+        AppCommand, AppEvent, GuildMemberSearchSurface, SequencedAppEvent,
         SnapshotRevision,
     },
     logging,
@@ -50,7 +51,7 @@ type ClipboardReadResult = std::result::Result<
 fn effect_context<'a>(
     media_runtime: &'a mut DashboardMediaRuntime,
     state: &'a mut DashboardState,
-    client: &'a DiscordClient,
+    client: &'a std::sync::Arc<dyn BackendClient>,
     media_decode_tx: &'a mpsc::UnboundedSender<MediaImageDecodeResult>,
 ) -> effect_helpers::EffectContext<'a> {
     effect_helpers::EffectContext {
@@ -72,7 +73,7 @@ pub(super) async fn run_dashboard(
     effects: &mut mpsc::Receiver<SequencedAppEvent>,
     snapshots: &mut watch::Receiver<SnapshotRevision>,
     commands: mpsc::Sender<AppCommand>,
-    client: DiscordClient,
+    client: std::sync::Arc<dyn BackendClient>,
     options: config::AppOptions,
     mut config_warnings: Vec<String>,
 ) -> Result<DashboardExit> {

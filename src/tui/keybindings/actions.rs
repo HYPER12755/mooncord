@@ -491,13 +491,15 @@ pub(in crate::tui) enum ComposerCompletionAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::tui) enum LoginGlobalAction {
     Cancel,
+    Quit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::tui) enum LoginModeSelectAction {
     StartToken,
     StartPassword,
-    StartQr,
+    StartGithub,
+    StartGoogle,
     Cancel,
 }
 
@@ -514,6 +516,7 @@ pub(in crate::tui) enum LoginTextInputAction {
 pub(in crate::tui) enum LoginPasswordInputAction {
     Submit,
     SwitchField,
+    ToggleSignupMode,
     Back,
     DeletePreviousChar,
     InsertChar(char),

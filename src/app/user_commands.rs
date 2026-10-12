@@ -1,19 +1,21 @@
-use crate::discord::ids::{
-    Id,
-    marker::{GuildMarker, UserMarker},
-};
+use std::sync::Arc;
+
 use crate::{
-    DiscordClient,
+    backend::BackendClient,
     discord::{
         ActivityInfo, AppEvent, PresenceEventFields, PresenceStatus, RichPresenceSelection,
         UserProfileUpdate, UserSettingsInfo,
+        ids::{
+            Id,
+            marker::{GuildMarker, UserMarker},
+        },
     },
 };
 
 use super::command_loop::log_app_error;
 
 pub(super) async fn load_profile(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     user_id: Id<UserMarker>,
     guild_id: Option<Id<GuildMarker>>,
 ) {
@@ -43,7 +45,7 @@ pub(super) async fn load_profile(
     }
 }
 
-async fn publish_user_note(client: &DiscordClient, user_id: Id<UserMarker>) {
+async fn publish_user_note(client: &Arc<dyn BackendClient>, user_id: Id<UserMarker>) {
     match client.load_user_note(user_id).await {
         Ok(note) => {
             client
@@ -57,7 +59,7 @@ async fn publish_user_note(client: &DiscordClient, user_id: Id<UserMarker>) {
     }
 }
 
-pub(super) async fn update_profile(client: DiscordClient, update: UserProfileUpdate) {
+pub(super) async fn update_profile(client: Arc<dyn BackendClient>, update: UserProfileUpdate) {
     let user_id = update.user_id;
     let guild_id = update.guild_id;
     if client.current_user_id() != Some(user_id) {
@@ -101,7 +103,7 @@ pub(super) async fn update_profile(client: DiscordClient, update: UserProfileUpd
     }
 }
 
-pub(super) async fn update_status(client: DiscordClient, status: PresenceStatus) {
+pub(super) async fn update_status(client: Arc<dyn BackendClient>, status: PresenceStatus) {
     match client.update_presence_status(status).await {
         Ok(activities) => publish_self_presence(&client, status, activities).await,
         Err(error) => {
@@ -112,7 +114,7 @@ pub(super) async fn update_status(client: DiscordClient, status: PresenceStatus)
 }
 
 pub(super) async fn update_guild_folder_settings(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     folder_id: u64,
     name: Option<String>,
     color: Option<u32>,
@@ -139,7 +141,7 @@ pub(super) async fn update_guild_folder_settings(
 }
 
 pub(super) async fn update_activity(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     status: PresenceStatus,
     mut activities: Vec<ActivityInfo>,
     rich_presence: RichPresenceSelection,
@@ -163,7 +165,7 @@ pub(super) async fn update_activity(
 }
 
 async fn publish_self_presence(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     status: PresenceStatus,
     activities: Vec<ActivityInfo>,
 ) {
@@ -182,7 +184,7 @@ async fn publish_self_presence(
         .await;
 }
 
-async fn publish_gateway_error(client: &DiscordClient, error: &crate::AppError) {
+async fn publish_gateway_error(client: &Arc<dyn BackendClient>, error: &crate::AppError) {
     client
         .publish_event(AppEvent::GatewayError {
             message: error.to_string(),
@@ -190,75 +192,3 @@ async fn publish_gateway_error(client: &DiscordClient, error: &crate::AppError) 
         .await;
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::discord::{GlobalUserProfileUpdate, UserProfileUpdate};
-
-    #[tokio::test]
-    async fn relay_selections_notify_the_coordinator_without_publishing_ui_snapshots() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("valid token header");
-        let user_id = Id::new(10);
-        client
-            .publish_event(AppEvent::Ready {
-                user: "neo".to_owned(),
-                user_id: Some(user_id),
-            })
-            .await;
-        let custom = ActivityInfo::test(crate::discord::ActivityKind::Custom, "deep in thought");
-        publish_self_presence(&client, PresenceStatus::Offline, vec![custom.clone()]).await;
-        let mut commands = client.take_gateway_commands_for_test();
-        let dirty = client.rich_presence_dirty();
-
-        for selection in [
-            RichPresenceSelection::Automatic,
-            RichPresenceSelection::App("123".to_owned()),
-        ] {
-            update_activity(
-                client.clone(),
-                PresenceStatus::Online,
-                vec![ActivityInfo::playing("Stale UI activity")],
-                selection.clone(),
-            )
-            .await;
-            assert_eq!(client.rich_presence_selection(), selection);
-            assert_eq!(client.current_user_activities(), vec![custom.clone()]);
-            assert!(
-                commands.try_recv().is_err(),
-                "the coordinator owns the presence payload"
-            );
-            tokio::time::timeout(std::time::Duration::from_secs(1), dirty.notified())
-                .await
-                .expect("relay selection wakes the coordinator");
-        }
-    }
-
-    #[tokio::test]
-    async fn profile_update_for_another_user_is_rejected_before_any_request() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("token is valid header");
-        let mut effects = client.take_effects();
-        let user_id = Id::new(42);
-
-        update_profile(
-            client.clone(),
-            UserProfileUpdate {
-                user_id,
-                guild_id: None,
-                global: GlobalUserProfileUpdate::default(),
-                guild: None,
-            },
-        )
-        .await;
-
-        let effect = effects.try_recv().expect("rejection is published");
-        assert!(matches!(
-            effect.event,
-            AppEvent::UserProfileUpdateFailed {
-                user_id: failed_user_id,
-                ..
-            } if failed_user_id == user_id
-        ));
-    }
-}

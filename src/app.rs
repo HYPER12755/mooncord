@@ -1,31 +1,17 @@
-mod command_dispatch;
 mod command_loop;
 mod credentials;
-mod gateway_commands;
-mod history_commands;
-mod inbox_commands;
-mod media_adapters;
-mod media_commands;
-mod message_commands;
-mod notification_commands;
-mod read_state_commands;
-mod session_commands;
 mod shutdown;
-mod translation_commands;
-mod user_commands;
-mod voice_commands;
 
-use tokio::sync::mpsc;
+use std::sync::Arc;
 
 use crate::{
-    DiscordClient, Result, config,
-    discord::{AppEvent, DiscordAuthSession},
+    Result, config,
+    backend::{BackendClient, SupabaseAuthSession, SupabaseClient, SessionTokens},
+    discord::AppEvent,
     logging, tui, version_check,
 };
 
-use self::{
-    command_loop::start_command_loop, credentials::resolve_token, shutdown::shutdown_gateway,
-};
+use self::{credentials::resolve_token, shutdown::shutdown_backend};
 
 #[derive(Default)]
 pub struct App;
@@ -50,16 +36,26 @@ impl App {
         };
 
         loop {
-            let (fingerprint, http) = crate::discord::load_client_fingerprint_and_http().await;
-            let auth_session = DiscordAuthSession::with_http(fingerprint, http);
+            let auth_session = SupabaseAuthSession::new()?;
             let resolved_token = resolve_token(auth_session.clone()).await?;
-            let token = resolved_token.token;
+            let tokens: SessionTokens = resolved_token.tokens;
             let token_warnings = resolved_token.warnings;
 
-            let client = DiscordClient::new_with_auth_session(token, auth_session)?;
+            let supabase_url = std::env::var("SUPABASE_URL")
+                .unwrap_or_else(|_| panic!("SUPABASE_URL not set"));
+            let supabase_key = std::env::var("SUPABASE_ANON_KEY")
+                .unwrap_or_else(|_| panic!("SUPABASE_ANON_KEY not set"));
+
+            // Initialize the REST client — all DB operations go through PostgREST (REST API)
+            let (client_inner, backend_commands_tx) = SupabaseClient::new(
+                supabase_url,
+                supabase_key,
+                tokens.clone(),
+            );
+            let client: Arc<dyn BackendClient> = Arc::new(client_inner);
             let effects = client.take_effects();
             let snapshots = client.subscribe_snapshots();
-            let (commands_tx, commands_rx) = mpsc::channel(64);
+            let commands_tx = backend_commands_tx;
             let (app_options, app_warnings) = match config::load_options_with_warnings() {
                 Ok(loaded) => loaded,
                 Err(error) => {
@@ -72,10 +68,7 @@ impl App {
             };
             let mut config_warnings = theme_warnings.clone();
             config_warnings.extend(app_warnings);
-            let serve_rich_presence = app_options.presence.share_rich_presence;
-            let gateway_task = client.start_gateway(serve_rich_presence);
-            let command_task =
-                start_command_loop(client.clone(), commands_rx, app_options.translation.clone());
+            let gateway_task = client.start();
 
             let version_client = client.clone();
             tokio::spawn(async move {
@@ -112,8 +105,7 @@ impl App {
             }
             .await;
 
-            command_task.abort();
-            shutdown_gateway(&client, gateway_task).await;
+            shutdown_backend(&client, gateway_task).await;
             match result? {
                 tui::DashboardExit::Quit => return Ok(()),
                 // Sign-out of an env-token session quits: re-resolving would

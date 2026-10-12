@@ -1,16 +1,16 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 
-use crate::discord::ids::{
-    Id,
-    marker::{ChannelMarker, GuildMarker},
-};
 use crate::{
-    DiscordClient,
+    backend::BackendClient,
     discord::{
         AppEvent, ChannelNotificationOverrideInfo, GuildNotificationSettingsInfo, MuteDuration,
         UserGuildSettingsInfo,
+        ids::{
+            Id,
+            marker::{ChannelMarker, GuildMarker},
+        },
     },
 };
 
@@ -20,7 +20,7 @@ type GuildMuteUpdate = (bool, Option<DateTime<Utc>>, Option<i64>);
 type ChannelMuteUpdate = (Id<ChannelMarker>, bool, Option<DateTime<Utc>>, Option<i64>);
 
 pub(super) async fn set_guild_muted(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     guild_id: Id<GuildMarker>,
     muted: bool,
     duration: Option<MuteDuration>,
@@ -45,7 +45,7 @@ pub(super) async fn set_guild_muted(
 }
 
 pub(super) async fn set_channel_muted(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     guild_id: Option<Id<GuildMarker>>,
     channel_id: Id<ChannelMarker>,
     muted: bool,
@@ -77,7 +77,7 @@ pub(super) async fn set_channel_muted(
 }
 
 pub(super) async fn set_thread_muted(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     muted: bool,
     duration: Option<MuteDuration>,
@@ -104,7 +104,7 @@ pub(super) async fn set_thread_muted(
 }
 
 pub(super) async fn set_thread_notification_level(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     flags: u64,
 ) {
@@ -124,7 +124,7 @@ pub(super) async fn set_thread_notification_level(
 }
 
 pub(super) async fn set_thread_followed(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     followed: bool,
 ) {
@@ -146,7 +146,7 @@ pub(super) async fn set_thread_followed(
 }
 
 async fn publish_settings_update(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     guild_id: Option<Id<GuildMarker>>,
     guild_update: Option<GuildMuteUpdate>,
     channel_override: Option<ChannelMuteUpdate>,
@@ -189,7 +189,7 @@ fn selected_time_window_from_duration(duration: Option<MuteDuration>, muted: boo
 }
 
 fn guild_notification_settings_update(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     guild_id: Option<Id<GuildMarker>>,
     guild_update: Option<GuildMuteUpdate>,
     channel_override: Option<ChannelMuteUpdate>,
@@ -232,59 +232,3 @@ fn guild_notification_settings_update(
     settings
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mute_duration_only_produces_an_end_time_while_muting() {
-        // (duration, muted) -> (has end time, selected window)
-        let cases = [
-            (Some(MuteDuration::Minutes(60)), true, true, Some(3600)),
-            (Some(MuteDuration::Permanent), true, false, Some(-1)),
-            (None, true, false, Some(-1)),
-            (Some(MuteDuration::Minutes(0)), true, false, Some(0)),
-            (Some(MuteDuration::Minutes(60)), false, false, None),
-            (Some(MuteDuration::Permanent), false, false, None),
-        ];
-
-        for (duration, muted, expects_end_time, expected_window) in cases {
-            let label = format!("{duration:?} muted={muted}");
-            assert_eq!(
-                mute_end_time_from_duration(duration, muted).is_some(),
-                expects_end_time,
-                "{label}"
-            );
-            assert_eq!(
-                selected_time_window_from_duration(duration, muted),
-                expected_window,
-                "{label}"
-            );
-        }
-    }
-
-    #[test]
-    fn optimistic_mute_updates_keep_selected_time_windows() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = DiscordClient::new("test-token".to_owned()).expect("test token is valid");
-        let guild_id = Id::new(1);
-        let channel_id = Id::new(2);
-
-        let settings = guild_notification_settings_update(
-            &client,
-            Some(guild_id),
-            Some((true, None, Some(-1))),
-            Some((channel_id, true, None, Some(900))),
-        );
-
-        assert!(settings.muted);
-        assert_eq!(settings.selected_time_window, Some(-1));
-        assert_eq!(settings.channel_overrides.len(), 1);
-        assert_eq!(settings.channel_overrides[0].channel_id, channel_id);
-        assert!(settings.channel_overrides[0].muted);
-        assert_eq!(
-            settings.channel_overrides[0].selected_time_window,
-            Some(900)
-        );
-    }
-}

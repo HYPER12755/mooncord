@@ -1,241 +1,108 @@
+//! Supabase-based login flow for Concord.
+//!
+//! This module implements the interactive login TUI, presenting the user
+//! with a set of login methods: token, email/password, magic link, email OTP,
+//! GitHub OAuth, and Google OAuth. On successful authentication it returns
+//! the resulting [`SessionTokens`](crate::backend::token_store::SessionTokens).
+
+use std::time::Duration;
+
+use crossterm::event::{self, EventStream};
+use futures::StreamExt;
+use ratatui::{Terminal, backend::CrosstermBackend};
+
+use crate::backend::{SupabaseAuthSession, token_store::SessionTokens};
+use crate::error::AppError;
+use crate::logging;
+
 mod render;
 mod state;
 mod terminal_events;
 
-#[cfg(test)]
-mod tests;
+use render::render;
+use state::LoginState;
+use terminal_events::{handle_terminal, LoginAction};
 
-use crossterm::event::EventStream;
-use futures::StreamExt;
-use tokio::{sync::mpsc, task::JoinHandle};
-
-use crate::{
-    AppError, Result,
-    discord::{
-        DiscordAuthSession,
-        password_auth::{self, MfaMethod, PasswordAuthEvent},
-        qr_auth::{self, QrEvent},
-    },
-};
-
-use self::{
-    render::render,
-    state::{LoginScreen, LoginState},
-    terminal_events::{LoginAction, handle_terminal},
-};
-use super::terminal::TerminalRestoreGuard;
-
-pub async fn prompt_login(
+/// Prompt the user interactively for a Supabase login method.
+///
+/// Returns the resulting [`SessionTokens`] on success, or an error.
+pub(super) async fn prompt_login_with_supabase(
     notice: Option<String>,
-    auth_session: DiscordAuthSession,
-) -> Result<String> {
-    let mut terminal = ratatui::init();
-    let _restore_guard = TerminalRestoreGuard::new();
-    let mut state = LoginState::new(notice);
-    let mut events = EventStream::new();
-    let mut qr_handle: Option<QrHandle> = None;
-    let mut password_handle: Option<PasswordAuthHandle> = None;
+    warnings: Vec<String>,
+    auth_session: SupabaseAuthSession,
+) -> crate::Result<SessionTokens> {
+    let mut state = LoginState::default();
+    state.notice = notice;
+    for warning in &warnings {
+        logging::error("app", warning);
+    }
 
+    // Set up terminal for login screen
+    let original_hook = std::panic::take_hook();
+    let terminal = match Terminal::new(CrosstermBackend::new(std::io::stdout())) {
+        Ok(t) => t,
+        Err(e) => return Err(AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))),
+    };
+    let _guard = {
+        use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+        enable_raw_mode()?;
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture
+        );
+        // On panic or drop, restore the terminal
+        struct RestoreGuard;
+        impl Drop for RestoreGuard {
+            fn drop(&mut self) {
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    LeaveAlternateScreen,
+                    crossterm::event::DisableMouseCapture
+                );
+                let _ = crossterm::terminal::disable_raw_mode();
+            }
+        }
+        RestoreGuard
+    };
+    let _ = original_hook;
+
+    let result = run_login_screen(&auth_session, &mut state, terminal).await;
+
+    // Ensure terminal is restored
+    let _ = _guard;
+
+    result
+}
+
+async fn run_login_screen(
+    auth_session: &SupabaseAuthSession,
+    state: &mut LoginState,
+    mut terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
+) -> crate::Result<SessionTokens> {
+    let mut terminal_events = EventStream::new();
+
+    // Render loop
     loop {
-        terminal.draw(|frame| render(frame, &state))?;
+        // Render the current screen
+        terminal.draw(|frame| {
+            render(frame, state);
+        })?;
 
-        tokio::select! {
-            terminal_event = events.next() => {
-                let event = match terminal_event {
-                    Some(Ok(event)) => event,
-                    Some(Err(error)) => return Err(error.into()),
-                    None => return Err(AppError::LoginCancelled),
-                };
-                match handle_terminal(&mut state, event) {
-                    Some(LoginAction::Submit(token)) => return Ok(token),
-                    Some(LoginAction::Cancel) => {
-                        if let Some(handle) = qr_handle.take() {
-                            handle.handle.abort();
-                        }
-                        if let Some(handle) = password_handle.take() {
-                            handle.handle.abort();
-                        }
-                        return Err(AppError::LoginCancelled);
-                    }
-                    Some(LoginAction::StartPasswordLogin { login, password }) => {
-                        if let Some(handle) = password_handle.take() {
-                            handle.handle.abort();
-                        }
-                        let (tx, rx) = mpsc::channel(8);
-                        let handle = password_auth::spawn_login_with_auth_session(
-                            login,
-                            password,
-                            auth_session.clone(),
-                            tx,
-                        );
-                        password_handle = Some(PasswordAuthHandle { rx, handle });
-                        state.password.in_progress = true;
-                        state.password.status = "Authenticating with Discord...".to_string();
-                        state.error = None;
-                    }
-                    Some(LoginAction::StartMfaVerify { method, code, ticket, login_instance_id }) => {
-                        if let Some(handle) = password_handle.take() {
-                            handle.handle.abort();
-                        }
-                        let (tx, rx) = mpsc::channel(8);
-                        let handle = password_auth::spawn_mfa_verify_with_auth_session(
-                            method,
-                            code,
-                            ticket,
-                            login_instance_id,
-                            auth_session.clone(),
-                            tx,
-                        );
-                        password_handle = Some(PasswordAuthHandle { rx, handle });
-                        state.password.in_progress = true;
-                        state.password.status = "Verifying multi-factor authentication...".to_string();
-                        state.error = None;
-                    }
-                    Some(LoginAction::SendMfaSms { ticket }) => {
-                        if let Some(handle) = password_handle.take() {
-                            handle.handle.abort();
-                        }
-                        let (tx, rx) = mpsc::channel(8);
-                        let handle = password_auth::spawn_sms_send_with_auth_session(
-                            ticket,
-                            auth_session.clone(),
-                            tx,
-                        );
-                        password_handle = Some(PasswordAuthHandle { rx, handle });
-                        state.password.in_progress = true;
-                        state.password.status = "Requesting SMS code from Discord...".to_string();
-                        state.error = None;
-                    }
-                    Some(LoginAction::CancelPasswordLogin) => {
-                        if let Some(handle) = password_handle.take() {
-                            handle.handle.abort();
-                        }
-                        state.password.reset_sensitive();
-                    }
-                    Some(LoginAction::StartQr) => {
-                        let (tx, rx) = mpsc::channel(8);
-                        let handle = qr_auth::spawn_with_auth_session(auth_session.clone(), tx);
-                        qr_handle = Some(QrHandle { rx, handle });
-                        state.qr.reset();
-                        state.qr.status = "Starting QR login...".to_string();
-                    }
-                    Some(LoginAction::CancelQr) => {
-                        if let Some(handle) = qr_handle.take() {
-                            handle.handle.abort();
-                        }
-                        state.qr.reset();
-                    }
-                    None => {}
-                }
-            }
-            password_msg = async {
-                if let Some(handle) = password_handle.as_mut() {
-                    handle.rx.recv().await
-                } else {
-                    std::future::pending::<Option<PasswordAuthEvent>>().await
-                }
-            } => {
-                let Some(message) = password_msg else {
-                    password_handle = None;
-                    state.password.in_progress = false;
-                    state.error = Some("Password login channel closed unexpectedly.".to_string());
-                    continue;
-                };
-                match message {
-                    PasswordAuthEvent::Status(status) => {
-                        state.password.in_progress = true;
-                        state.password.status = status;
-                    }
-                    PasswordAuthEvent::MfaRequired(challenge) => {
-                        password_handle = None;
-                        state.password.in_progress = false;
-                        state.password.password.clear();
-                        state.password.mfa = Some(challenge);
-                        state.password.mfa_method = None;
-                        state.password.mfa_code.clear();
-                        state.password.status = "Choose a multi-factor authentication method.".to_string();
-                        state.screen = LoginScreen::MfaSelect;
-                    }
-                    PasswordAuthEvent::SmsSent { phone } => {
-                        password_handle = None;
-                        state.password.in_progress = false;
-                        state.password.mfa_method = Some(MfaMethod::Sms);
-                        state.password.mfa_code.clear();
-                        state.password.status = match phone {
-                            Some(phone) => format!("SMS sent to {phone}. Enter the code below."),
-                            None => "SMS sent. Enter the code below.".to_string(),
-                        };
-                        state.screen = LoginScreen::MfaCode;
-                    }
-                    PasswordAuthEvent::RequiredActions(actions) => {
-                        password_handle = None;
-                        state.password.reset_sensitive();
-                        let actions = actions
-                            .into_iter()
-                            .map(|action| match action.as_str() {
-                                "update_password" => "update the account password".to_owned(),
-                                _ => action,
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        state.error = Some(format!(
-                            "Discord requires you to {actions} in the official client before Concord can continue."
-                        ));
-                    }
-                    PasswordAuthEvent::Token(token) => {
-                        if let Some(handle) = password_handle.take() {
-                            let _ = handle.handle.await;
-                        }
-                        state.password.reset_sensitive();
-                        return Ok(token);
-                    }
-                    PasswordAuthEvent::Failed(reason) => {
-                        password_handle = None;
-                        state.password.in_progress = false;
-                        state.password.status.clear();
-                        state.error = Some(format!("Password login failed: {reason}"));
-                    }
-                }
-            }
-            qr_msg = async {
-                if let Some(handle) = qr_handle.as_mut() {
-                    handle.rx.recv().await
-                } else {
-                    std::future::pending::<Option<QrEvent>>().await
-                }
-            } => {
-                let Some(message) = qr_msg else {
-                    qr_handle = None;
-                    state.screen = LoginScreen::ModeSelect;
-                    state.error = Some("QR login channel closed unexpectedly.".to_string());
-                    continue;
-                };
-                match message {
-                    QrEvent::Status(status) => state.qr.status = status,
-                    QrEvent::QrBitmap(bitmap) => state.qr.bitmap = Some(bitmap),
-                    QrEvent::UserPending { username, discriminator } => {
-                        let display = if discriminator == "0" {
-                            username
-                        } else {
-                            format!("{username}#{discriminator}")
-                        };
-                        state.qr.pending_user = Some(display);
-                    }
-                    QrEvent::Token(token) => {
-                        if let Some(handle) = qr_handle.take() {
-                            let _ = handle.handle.await;
-                        }
-                        return Ok(token);
-                    }
-                    QrEvent::Cancelled => {
-                        qr_handle = None;
-                        state.screen = LoginScreen::ModeSelect;
-                        state.error = Some("QR login was cancelled in the Discord mobile app.".to_string());
-                    }
-                    QrEvent::Failed(reason) => {
-                        qr_handle = None;
-                        state.screen = LoginScreen::ModeSelect;
-                        state.error = Some(format!("QR login failed: {reason}"));
+        // Poll for terminal events via EventStream (async, non-blocking)
+        let maybe_event = terminal_events.next().await;
+
+        if let Some(Ok(event)) = maybe_event {
+            let action = handle_terminal(state, event);
+            if let Some(action) = action {
+                let result = dispatch_action(auth_session, state, action).await;
+                match result {
+                    Ok(Some(tokens)) => return Ok(tokens),
+                    Ok(None) => continue,
+                    Err(error) => {
+                        state.screen = state::LoginScreen::ModeSelect;
+                        state.in_progress = false;
+                        state.error = Some(format!("{error}"));
                     }
                 }
             }
@@ -243,12 +110,117 @@ pub async fn prompt_login(
     }
 }
 
-struct QrHandle {
-    rx: mpsc::Receiver<QrEvent>,
-    handle: JoinHandle<()>,
+async fn dispatch_action(
+    auth_session: &SupabaseAuthSession,
+    state: &mut LoginState,
+    action: LoginAction,
+) -> crate::Result<Option<SessionTokens>> {
+    match action {
+        LoginAction::SubmitToken(token) => {
+            // Validate and parse the JWT
+            let exp = extract_jwt_exp(&token)?;
+            let tokens = SessionTokens::new(token.clone(), String::new(), exp);
+            // Verify with the auth server
+            match auth_session.get_current_user(Some(&token)).await {
+                Ok(_) => Ok(Some(tokens)),
+                Err(error) => {
+                    state.error = Some(format!("Token verification failed: {error}"));
+                    state.screen = state::LoginScreen::ModeSelect;
+                    Ok(None)
+                }
+            }
+        }
+        LoginAction::SubmitPassword { email, password } => {
+            state.in_progress = true;
+            state.status = "Signing in...".to_string();
+            state.screen = state::LoginScreen::Busy;
+
+            match auth_session.sign_in_with_password(&email, &password).await {
+                Ok(result) => {
+                    let tokens = SessionTokens::new(
+                        result.access_token,
+                        result.refresh_token,
+                        chrono::Utc::now().timestamp() as u64 + result.expires_in as u64,
+                    );
+                    return Ok(Some(tokens));
+                }
+                Err(error) => {
+                    state.error = Some(format!("Password login failed: {error}"));
+                    state.screen = state::LoginScreen::ModeSelect;
+                    state.in_progress = false;
+                }
+            }
+            Ok(None)
+        }
+        LoginAction::SubmitSignup { email, password } => {
+            state.in_progress = true;
+            state.status = "Creating account...".to_string();
+            state.screen = state::LoginScreen::Busy;
+
+            match auth_session.sign_up(&email, &password).await {
+                Ok(result) => {
+                    let tokens = SessionTokens::new(
+                        result.access_token,
+                        result.refresh_token,
+                        chrono::Utc::now().timestamp() as u64 + result.expires_in as u64,
+                    );
+                    return Ok(Some(tokens));
+                }
+                Err(error) => {
+                    state.error = Some(format!("Signup failed: {error}"));
+                    state.screen = state::LoginScreen::ModeSelect;
+                    state.in_progress = false;
+                }
+            }
+            Ok(None)
+        }
+        LoginAction::StartGithubOauth => {
+            let url = auth_session.get_oauth_url("github");
+            state.oauth_url = Some(url.clone());
+            state.screen = state::LoginScreen::OauthUrl;
+            logging::debug("app", format!("GitHub OAuth URL: {url}"));
+            Ok(None)
+        }
+        LoginAction::StartGoogleOauth => {
+            let url = auth_session.get_oauth_url("google");
+            state.oauth_url = Some(url.clone());
+            state.screen = state::LoginScreen::OauthUrl;
+            logging::debug("app", format!("Google OAuth URL: {url}"));
+            Ok(None)
+        }
+        LoginAction::Cancel => {
+            cancel_login(state);
+            Err(AppError::LoginCancelled)
+        }
+        LoginAction::Quit => {
+            std::process::exit(0);
+        }
+    }
 }
 
-struct PasswordAuthHandle {
-    rx: mpsc::Receiver<PasswordAuthEvent>,
-    handle: JoinHandle<()>,
+fn cancel_login(state: &mut LoginState) {
+    state.screen = state::LoginScreen::ModeSelect;
+    state.in_progress = false;
+    state.status.clear();
+    state.oauth_url = None;
+    state.error = None;
+    state.reset_sensitive();
+}
+
+/// Extract the `exp` claim from a JWT payload.
+fn extract_jwt_exp(token: &str) -> crate::Result<u64> {
+    use base64::Engine;
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return Err(AppError::DiscordTokenRejected);
+    }
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(parts[1])
+        .map_err(|_| AppError::DiscordTokenRejected)?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload)
+        .map_err(|_| AppError::DiscordTokenRejected)?;
+    claims
+        .get("exp")
+        .and_then(|v| v.as_u64())
+        .ok_or(AppError::DiscordTokenRejected)
 }

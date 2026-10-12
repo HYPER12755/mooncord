@@ -23,10 +23,7 @@ use tokio::sync::{mpsc, watch};
 use crate::{
     AppError, Result,
     config::{AppOptions, KeymapOptions, ThemeOptions},
-    discord::{
-        AppCommand, DiscordAuthSession, DiscordClient, SequencedAppEvent, SnapshotRevision,
-        load_client_fingerprint_and_http,
-    },
+    discord::{AppCommand, SequencedAppEvent, SnapshotRevision},
 };
 
 pub use runtime::DashboardExit;
@@ -54,24 +51,19 @@ pub fn initialize_theme(theme_options: &ThemeOptions) -> Vec<String> {
     warnings
 }
 
-pub async fn prompt_login(notice: Option<String>) -> Result<String> {
-    let (fingerprint, http) = load_client_fingerprint_and_http().await;
-    let auth_session = DiscordAuthSession::with_http(fingerprint, http);
-    login::prompt_login(notice, auth_session).await
-}
-
-pub(crate) async fn prompt_login_with_auth_session(
+pub async fn prompt_login_with_supabase(
     notice: Option<String>,
-    auth_session: DiscordAuthSession,
-) -> Result<String> {
-    login::prompt_login(notice, auth_session).await
+    post_login_warnings: Vec<String>,
+    auth_session: crate::backend::SupabaseAuthSession,
+) -> Result<crate::backend::SessionTokens> {
+    login::prompt_login_with_supabase(notice, post_login_warnings, auth_session).await
 }
 
 pub async fn run(
     effects: mpsc::Receiver<SequencedAppEvent>,
     snapshots: watch::Receiver<SnapshotRevision>,
     commands: mpsc::Sender<AppCommand>,
-    client: DiscordClient,
+    client: std::sync::Arc<dyn crate::backend::BackendClient>,
     mut config_warnings: Vec<String>,
 ) -> Result<DashboardExit> {
     let options = match crate::config::load_options_with_warnings() {
@@ -99,7 +91,7 @@ pub(crate) async fn run_with_options(
     mut effects: mpsc::Receiver<SequencedAppEvent>,
     mut snapshots: watch::Receiver<SnapshotRevision>,
     commands: mpsc::Sender<AppCommand>,
-    client: DiscordClient,
+    client: std::sync::Arc<dyn crate::backend::BackendClient>,
     options: AppOptions,
     config_warnings: Vec<String>,
 ) -> Result<DashboardExit> {

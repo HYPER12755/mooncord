@@ -1051,6 +1051,7 @@ dependencies = [
  "davey",
  "dirs",
  "dispatch2",
+ "dotenvy",
  "emojis",
  "fast_image_resize",
  "flate2",
@@ -1098,6 +1099,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "toml",
+ "tracing",
  "unicode-segmentation",
  "unicode-width",
  "uuid",
@@ -1692,6 +1694,12 @@ checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
 dependencies = [
  "litrs",
 ]
+
+[[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
 
 [[package]]
 name = "downcast-rs"
@@ -3434,9 +3442,9 @@ dependencies = [
 
 [[package]]
 name = "libspa"
-version = "0.10.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "882f7427e7989dcc9d388b7f05c4630390a1d7696f9ffa469cd4a7a48f0b4c40"
+checksum = "2909f3be29d674e7f10604aff18d1bbe1bb03c4cd61c8a8ba19c0b1d162f7d4e"
 dependencies = [
  "bitflags 2.13.2",
  "cc",
@@ -4633,9 +4641,9 @@ dependencies = [
 
 [[package]]
 name = "pipewire"
-version = "0.10.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde71084c4e25959d68f1ea54daa75e5ecdb338e5caf0b5510143b79baa32d5c"
+checksum = "8585aba8a52ad74ccc633b8e293c1dc4277976bd5d510b925533f34fd6685f38"
 dependencies = [
  "bitflags 2.13.2",
  "libc",

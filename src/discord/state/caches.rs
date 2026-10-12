@@ -43,6 +43,12 @@ pub(in crate::discord) struct MessageCache {
     pub(in crate::discord) max_warm_message_channels: usize,
 }
 
+impl Default for MessageCache {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_MESSAGES_PER_CHANNEL)
+    }
+}
+
 impl MessageCache {
     pub(super) fn new(max_messages_per_channel: usize) -> Self {
         Self {
@@ -65,7 +71,7 @@ pub(in crate::discord) struct ChannelMessageTimeline {
     pub(in crate::discord) active_focus: MessageTimelineFocus,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(in crate::discord) struct MessageSegment {
     pub(in crate::discord) message_ids: VecDeque<Id<MessageMarker>>,
     pub(in crate::discord) active: bool,

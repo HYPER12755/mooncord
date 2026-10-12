@@ -1,11 +1,14 @@
-use crate::discord::ids::{
-    Id,
-    marker::{ChannelMarker, GuildMarker, MessageMarker},
-};
+use std::sync::Arc;
 
 use crate::{
-    DiscordClient,
-    discord::{AppEvent, MessageHistoryAfterMode, MessageHistoryLoadTarget, MessageSearchQuery},
+    backend::BackendClient,
+    discord::{
+        AppEvent, MessageHistoryAfterMode, MessageHistoryLoadTarget, MessageSearchQuery,
+        ids::{
+            Id,
+            marker::{ChannelMarker, GuildMarker, MessageMarker},
+        },
+    },
     logging,
 };
 
@@ -14,7 +17,7 @@ const THREAD_PREVIEW_LIMIT: u16 = 1;
 const INBOX_CHANNEL_HISTORY_LIMIT: u16 = 5;
 
 pub(super) async fn load_history(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     before: Option<Id<MessageMarker>>,
 ) {
@@ -62,7 +65,7 @@ pub(super) async fn load_history(
     }
 }
 
-pub(super) async fn refresh_history(client: DiscordClient, channel_id: Id<ChannelMarker>) {
+pub(super) async fn refresh_history(client: Arc<dyn BackendClient>, channel_id: Id<ChannelMarker>) {
     let endpoint = format_message_history_endpoint(channel_id, None, MESSAGE_HISTORY_LIMIT);
     match client
         .load_message_history(channel_id, None, MESSAGE_HISTORY_LIMIT)
@@ -99,7 +102,7 @@ pub(super) async fn refresh_history(client: DiscordClient, channel_id: Id<Channe
 }
 
 pub(super) async fn load_history_after(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     after: Id<MessageMarker>,
     mode: MessageHistoryAfterMode,
@@ -158,7 +161,7 @@ pub(super) async fn load_history_after(
 }
 
 pub(super) async fn load_history_around(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
 ) {
@@ -205,7 +208,7 @@ pub(super) async fn load_history_around(
 }
 
 pub(super) async fn load_thread_preview(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     message_id: Id<MessageMarker>,
 ) {
@@ -264,7 +267,7 @@ pub(super) async fn load_thread_preview(
 }
 
 pub(super) async fn load_forum_post_data(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     guild_id: Id<GuildMarker>,
     channel_id: Id<ChannelMarker>,
     thread_ids: Vec<Id<ChannelMarker>>,
@@ -306,7 +309,7 @@ pub(super) async fn load_forum_post_data(
 }
 
 pub(super) async fn load_archived_threads(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     guild_id: Id<GuildMarker>,
     channel_id: Id<ChannelMarker>,
     before: Option<String>,
@@ -350,7 +353,7 @@ pub(super) async fn load_archived_threads(
 }
 
 pub(super) async fn search_messages(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     request_id: u64,
     query: MessageSearchQuery,
 ) {
@@ -382,7 +385,7 @@ pub(super) async fn search_messages(
 }
 
 pub(super) async fn load_inbox_channel_history(
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     request_id: u64,
 ) {
@@ -421,7 +424,7 @@ pub(super) async fn load_inbox_channel_history(
 }
 
 async fn publish_message_history_load_failed(
-    client: &DiscordClient,
+    client: &Arc<dyn BackendClient>,
     channel_id: Id<ChannelMarker>,
     target: MessageHistoryLoadTarget,
     message: String,

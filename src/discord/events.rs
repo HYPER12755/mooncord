@@ -64,6 +64,18 @@ pub struct MessageUpdateDispatchInfo {
     pub extra_fields: BTreeMap<String, Value>,
 }
 
+impl Default for MessageUpdateDispatchInfo {
+    fn default() -> Self {
+        Self {
+            guild_id: None,
+            channel_id: Id::new(0),
+            message_id: Id::new(0),
+            fields: MessageUpdateEventFields::default(),
+            extra_fields: BTreeMap::new(),
+        }
+    }
+}
+
 impl Default for MessageUpdateEventFields {
     fn default() -> Self {
         Self {

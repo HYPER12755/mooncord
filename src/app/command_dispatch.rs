@@ -8,7 +8,7 @@ use tokio::sync::Semaphore;
 use tokio::task::AbortHandle;
 
 use crate::{
-    DiscordClient,
+    backend::BackendClient,
     discord::{AppCommand, TranslationTarget, VoiceAudioSettings, VoiceAudioSources},
     translation::TranslationService,
 };
@@ -80,7 +80,7 @@ impl ComposerTranslationRequestScheduler {
 
 #[derive(Clone)]
 pub(super) struct CommandDispatcher {
-    client: DiscordClient,
+    client: Arc<dyn BackendClient>,
     attachment_preview_permits: Arc<Semaphore>,
     attachment_download_permits: Arc<Semaphore>,
     autocomplete_requests: AutocompleteRequestScheduler,
@@ -89,7 +89,7 @@ pub(super) struct CommandDispatcher {
 }
 
 impl CommandDispatcher {
-    pub(super) fn new(client: DiscordClient, translation: TranslationService) -> Self {
+    pub(super) fn new(client: Arc<dyn BackendClient>, translation: TranslationService) -> Self {
         Self {
             client,
             attachment_preview_permits: Arc::new(Semaphore::new(

@@ -62,6 +62,34 @@ pub struct ChannelInfo {
     pub is_spam: Option<bool>,
 }
 
+impl Default for ChannelInfo {
+    fn default() -> Self {
+        Self {
+            guild_id: None,
+            channel_id: Id::new(0),
+            parent_id: None,
+            owner_id: None,
+            position: None,
+            last_message_id: None,
+            name: String::new(),
+            kind: String::new(),
+            message_count: None,
+            member_count: None,
+            user_limit: None,
+            total_message_sent: None,
+            thread_metadata: None,
+            flags: None,
+            rate_limit_per_user: None,
+            available_tags: Vec::new(),
+            applied_tags: Vec::new(),
+            recipients: None,
+            permission_overwrites: Vec::new(),
+            is_message_request: None,
+            is_spam: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForumTagInfo {
     pub id: Id<ForumTagMarker>,
@@ -71,7 +99,7 @@ pub struct ForumTagInfo {
     pub emoji_name: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ThreadMetadataInfo {
     /// Discord's `thread_metadata.archived` field.
     pub archived: bool,
@@ -87,6 +115,7 @@ pub struct ThreadMetadataInfo {
     /// Discord's `thread_metadata.create_timestamp` field. Discord only
     /// populates it for newer threads.
     pub create_timestamp: Option<String>,
+    pub before: Option<String>,
 }
 
 impl ChannelInfo {
@@ -152,6 +181,7 @@ impl ThreadMetadataInfo {
             locked,
             invitable: None,
             create_timestamp: None,
+            before: None,
         }
     }
 }

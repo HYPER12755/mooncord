@@ -1,25 +1,24 @@
+use std::sync::Arc;
+
 use tokio::time::{Duration, sleep};
 
-use crate::{DiscordClient, logging};
+use crate::{backend::BackendClient, logging};
 
-pub(super) async fn shutdown_gateway(
-    client: &DiscordClient,
+pub(super) async fn shutdown_backend(
+    _client: &Arc<dyn BackendClient>,
     mut gateway_task: tokio::task::JoinHandle<()>,
 ) {
-    if let Err(message) = client.shutdown_voice_runtime().await {
-        logging::error("app", format!("voice runtime shutdown failed: {message}"));
-    }
-    if let Err(message) = client.shutdown_gateway() {
-        logging::error("app", format!("gateway shutdown request failed: {message}"));
-        gateway_task.abort();
-    }
+    // For the Supabase backend there is no gateway task to abort explicitly —
+    // the background polled task from .start() owns the connection. Aborting
+    // the task signals it to stop.
+    gateway_task.abort();
 
     tokio::select! {
         result = &mut gateway_task => {
             if let Err(error) = result
                 && !error.is_cancelled()
             {
-                logging::error("app", format!("gateway task ended unexpectedly: {error}"));
+                logging::error("app", format!("backend task ended unexpectedly: {error}"));
             }
         }
         () = sleep(Duration::from_secs(2)) => {
@@ -27,7 +26,7 @@ pub(super) async fn shutdown_gateway(
             if let Err(error) = gateway_task.await
                 && !error.is_cancelled()
             {
-                logging::error("app", format!("gateway task ended unexpectedly: {error}"));
+                logging::error("app", format!("backend task ended unexpectedly: {error}"));
             }
         }
     }

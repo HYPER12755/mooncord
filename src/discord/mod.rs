@@ -12,7 +12,7 @@ mod display_name;
 mod emoji;
 mod events;
 mod fingerprint;
-mod gateway;
+pub(crate) mod gateway;
 mod guild;
 pub mod ids;
 mod json;
@@ -64,7 +64,12 @@ pub use channel::{
     PermissionOverwriteKind, ThreadMetadataInfo,
 };
 pub use client::DiscordClient;
+pub(crate) use client::AppEventPublisher;
+#[allow(unused_imports)]
 pub(crate) use client::validate_token_header;
+pub(crate) use client::RequestState;
+pub(crate) use client::ApplicationCommandCache;
+pub(crate) use request_lifecycle::RequestLifecycle;
 pub(crate) use commands::next_message_nonce;
 pub use commands::{
     AppCommand, AttachmentDownloadId, DownloadAttachmentSource, ForumPostCreate,
@@ -86,6 +91,7 @@ pub use events::{
     MessageUpdateDispatchInfo, MessageUpdateEventFields, PresenceEventFields, ReadySnapshotInfo,
     SequencedAppEvent, UserGuildSettingsInfo,
 };
+#[cfg(feature = "stream-broadcast")]
 pub(crate) use fingerprint::load_client_fingerprint_and_http;
 pub use guild::{
     CustomEmojiInfo, GuildFolder, GuildOnboardingInfo, GuildOnboardingMode, GuildVerificationLevel,
@@ -121,7 +127,8 @@ pub use read::ReadStateInfo;
 pub(crate) use request_lifecycle::{
     ArchivedThreadRequestTarget, ForumPostDataRequestTarget, GuildMemberSearchSurface,
 };
-pub use rest::ReactionUsersPage;
+pub use rest::{CreatedForumPost, ReactionUsersPage};
+pub(crate) use rest::MessageEditRequest;
 pub use state::{
     ChannelRecipientState, ChannelState, ChannelUnreadState, ChannelVisibilityStats,
     CurrentVoiceConnectionState, DiscordSnapshot, DiscordState, GuildMemberListEntry,
@@ -148,7 +155,5 @@ pub use voice::{
     StreamServerInfo, StreamUpdateInfo, VoiceConnectionStatus, VoiceScope, VoiceServerInfo,
     VoiceSoundKind, VoiceStateInfo,
 };
-pub(crate) use voice::{
-    VoiceAudioSourceOptions, VoiceAudioSources, list_stream_capture_targets,
-    list_voice_audio_sources,
-};
+pub(crate) use voice::VoiceAudioSourceOptions;
+pub(crate) use voice::VoiceAudioSources;

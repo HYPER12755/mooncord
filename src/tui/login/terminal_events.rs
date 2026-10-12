@@ -1,35 +1,29 @@
 use crossterm::event::{Event as TerminalEvent, KeyEventKind};
 
-use crate::discord::{
-    password_auth::{MfaChallenge, MfaMethod},
-    validate_token_header,
-};
+use super::state::{LoginScreen, FormField, LoginState};
 
-use super::state::{LoginScreen, LoginState, PasswordField};
+/// Quick syntactic check: a JWT must have 3 dot-separated base64url segments.
+fn is_valid_jwt(token: &str) -> bool {
+    token.split('.').count() == 3 && !token.trim().is_empty()
+}
 use crate::tui::keybindings::{
-    LoginBusyAction, LoginGlobalAction, LoginMfaSelectAction, LoginModeSelectAction,
+    LoginBusyAction, LoginGlobalAction, LoginModeSelectAction,
     LoginPasswordInputAction, LoginTextInputAction,
 };
 
 pub(super) enum LoginAction {
-    Submit(String),
+    /// Submit a raw token string (from token input).
+    SubmitToken(String),
+    /// Submit email + password for password login.
+    SubmitPassword { email: String, password: String },
+    /// Sign up a new account with email + password.
+    SubmitSignup { email: String, password: String },
+    /// Start GitHub OAuth — returns immediately, the caller opens the URL.
+    StartGithubOauth,
+    /// Start Google OAuth.
+    StartGoogleOauth,
     Cancel,
-    StartPasswordLogin {
-        login: String,
-        password: String,
-    },
-    StartMfaVerify {
-        method: MfaMethod,
-        code: String,
-        ticket: String,
-        login_instance_id: String,
-    },
-    SendMfaSms {
-        ticket: String,
-    },
-    CancelPasswordLogin,
-    StartQr,
-    CancelQr,
+    Quit,
 }
 
 pub(super) fn handle_terminal(state: &mut LoginState, event: TerminalEvent) -> Option<LoginAction> {
@@ -41,11 +35,10 @@ pub(super) fn handle_terminal(state: &mut LoginState, event: TerminalEvent) -> O
     if key.kind != KeyEventKind::Press {
         return None;
     }
-    if matches!(
-        state.key_bindings.login_global_action(key),
-        Some(LoginGlobalAction::Cancel)
-    ) {
-        return Some(LoginAction::Cancel);
+    match state.key_bindings.login_global_action(key) {
+        Some(LoginGlobalAction::Cancel) => return Some(LoginAction::Cancel),
+        Some(LoginGlobalAction::Quit) => return Some(LoginAction::Quit),
+        None => {}
     }
 
     match state.screen {
@@ -53,17 +46,29 @@ pub(super) fn handle_terminal(state: &mut LoginState, event: TerminalEvent) -> O
             Some(LoginModeSelectAction::StartToken) => {
                 state.screen = LoginScreen::TokenInput;
                 state.error = None;
+                state.token_input.clear();
                 None
             }
             Some(LoginModeSelectAction::StartPassword) => {
-                state.screen = LoginScreen::PasswordInput;
+                state.screen = LoginScreen::EmailPassword;
                 state.error = None;
+                state.reset_form();
+                state.active_field = FormField::Email;
                 None
             }
-            Some(LoginModeSelectAction::StartQr) => {
-                state.screen = LoginScreen::Qr;
+            Some(LoginModeSelectAction::StartGithub) => {
+                state.screen = LoginScreen::Busy;
                 state.error = None;
-                Some(LoginAction::StartQr)
+                state.in_progress = true;
+                state.status = "Starting GitHub OAuth...".to_string();
+                Some(LoginAction::StartGithubOauth)
+            }
+            Some(LoginModeSelectAction::StartGoogle) => {
+                state.screen = LoginScreen::Busy;
+                state.error = None;
+                state.in_progress = true;
+                state.status = "Starting Google OAuth...".to_string();
+                Some(LoginAction::StartGoogleOauth)
             }
             Some(LoginModeSelectAction::Cancel) => Some(LoginAction::Cancel),
             None => None,
@@ -74,11 +79,11 @@ pub(super) fn handle_terminal(state: &mut LoginState, event: TerminalEvent) -> O
                 if token.is_empty() {
                     state.error = Some("Token cannot be empty".to_string());
                     None
-                } else if let Err(error) = validate_token_header(token) {
-                    state.error = Some(format!("Token is invalid: {error}"));
+                } else if !is_valid_jwt(token) {
+                    state.error = Some("Token is not a valid JWT".to_string());
                     None
                 } else {
-                    Some(LoginAction::Submit(token.to_string()))
+                    Some(LoginAction::SubmitToken(token.to_string()))
                 }
             }
             LoginTextInputAction::Back => {
@@ -99,32 +104,41 @@ pub(super) fn handle_terminal(state: &mut LoginState, event: TerminalEvent) -> O
             }
             LoginTextInputAction::Ignore => None,
         },
-        LoginScreen::PasswordInput => {
-            if state.password.in_progress {
+        LoginScreen::EmailPassword => {
+            if state.in_progress {
                 return match state.key_bindings.login_busy_action(key) {
                     LoginBusyAction::Cancel => {
                         state.screen = LoginScreen::ModeSelect;
-                        Some(LoginAction::CancelPasswordLogin)
+                        state.in_progress = false;
+                        Some(LoginAction::Cancel)
                     }
                     LoginBusyAction::Ignore => None,
                 };
             }
             match state.key_bindings.login_password_input_action(key) {
                 LoginPasswordInputAction::Submit => {
-                    let login = state.password.login.trim().to_string();
-                    let password = state.password.password.clone();
-                    if login.is_empty() || password.is_empty() {
-                        state.error = Some("Email/phone and password are required".to_string());
+                    let email = state.email.trim().to_string();
+                    let password = state.password.clone();
+                    if email.is_empty() || password.is_empty() {
+                        state.error = Some("Email and password are required".to_string());
                         None
+                    } else if state.signup_mode {
+                        state.password.clear();
+                        Some(LoginAction::SubmitSignup { email, password })
                     } else {
-                        state.password.password.clear();
-                        Some(LoginAction::StartPasswordLogin { login, password })
+                        state.password.clear();
+                        Some(LoginAction::SubmitPassword { email, password })
                     }
                 }
+                LoginPasswordInputAction::ToggleSignupMode => {
+                    state.signup_mode = !state.signup_mode;
+                    state.error = None;
+                    None
+                }
                 LoginPasswordInputAction::SwitchField => {
-                    state.password.active_field = match state.password.active_field {
-                        PasswordField::Login => PasswordField::Password,
-                        PasswordField::Password => PasswordField::Login,
+                    state.active_field = match state.active_field {
+                        FormField::Email => FormField::Password,
+                        FormField::Password => FormField::Email,
                     };
                     state.error = None;
                     None
@@ -132,124 +146,43 @@ pub(super) fn handle_terminal(state: &mut LoginState, event: TerminalEvent) -> O
                 LoginPasswordInputAction::Back => {
                     state.screen = LoginScreen::ModeSelect;
                     state.error = None;
-                    Some(LoginAction::CancelPasswordLogin)
+                    state.reset_sensitive();
+                    None
                 }
                 LoginPasswordInputAction::DeletePreviousChar => {
-                    active_password_input(state).pop();
+                    active_form_input(state).pop();
                     state.error = None;
                     None
                 }
                 LoginPasswordInputAction::InsertChar(value) => {
-                    active_password_input(state).push(value);
+                    active_form_input(state).push(value);
                     state.error = None;
                     None
                 }
                 LoginPasswordInputAction::Ignore => None,
             }
         }
-        LoginScreen::MfaSelect => {
-            if state.password.in_progress {
-                return match state.key_bindings.login_busy_action(key) {
-                    LoginBusyAction::Cancel => {
-                        state.screen = LoginScreen::PasswordInput;
-                        Some(LoginAction::CancelPasswordLogin)
-                    }
-                    LoginBusyAction::Ignore => None,
-                };
-            }
-            match state.key_bindings.login_mfa_select_action(key) {
-                LoginMfaSelectAction::Choose(method) if method == MfaMethod::Totp => {
-                    if mfa_supports(&state.password.mfa, method) {
-                        state.password.mfa_method = Some(method);
-                        state.password.mfa_code.clear();
-                        state.password.status =
-                            "Enter the TOTP code from your authenticator app.".to_string();
-                        state.screen = LoginScreen::MfaCode;
-                    }
-                    None
-                }
-                LoginMfaSelectAction::Choose(method) if method == MfaMethod::Sms => {
-                    if mfa_supports(&state.password.mfa, method)
-                        && let Some(challenge) = &state.password.mfa
-                    {
-                        return Some(LoginAction::SendMfaSms {
-                            ticket: challenge.ticket.clone(),
-                        });
-                    }
-                    None
-                }
-                LoginMfaSelectAction::Choose(_) => None,
-                LoginMfaSelectAction::Back => {
-                    state.screen = LoginScreen::PasswordInput;
-                    state.password.reset_sensitive();
-                    state.error = None;
-                    None
-                }
-                LoginMfaSelectAction::Ignore => None,
-            }
-        }
-        LoginScreen::MfaCode => {
-            if state.password.in_progress {
-                return match state.key_bindings.login_busy_action(key) {
-                    LoginBusyAction::Cancel => {
-                        state.screen = LoginScreen::PasswordInput;
-                        state.error = None;
-                        Some(LoginAction::CancelPasswordLogin)
-                    }
-                    LoginBusyAction::Ignore => None,
-                };
-            }
-            match state.key_bindings.login_text_input_action(key) {
-                LoginTextInputAction::Submit => {
-                    let code = state.password.mfa_code.trim().to_string();
-                    if code.is_empty() {
-                        state.error = Some("MFA code cannot be empty".to_string());
-                        return None;
-                    }
-                    let Some(challenge) = &state.password.mfa else {
-                        state.error =
-                            Some("MFA challenge is missing; restart password login".to_string());
-                        return None;
-                    };
-                    let Some(method) = state.password.mfa_method else {
-                        state.error =
-                            Some("MFA method is missing; choose a method first".to_string());
-                        return None;
-                    };
-                    state.password.mfa_code.clear();
-                    Some(LoginAction::StartMfaVerify {
-                        method,
-                        code,
-                        ticket: challenge.ticket.clone(),
-                        login_instance_id: challenge.login_instance_id.clone(),
-                    })
-                }
-                LoginTextInputAction::Back => {
-                    state.screen = LoginScreen::MfaSelect;
-                    state.password.mfa_code.clear();
-                    state.error = None;
-                    None
-                }
-                LoginTextInputAction::DeletePreviousChar => {
-                    state.password.mfa_code.pop();
-                    state.error = None;
-                    None
-                }
-                LoginTextInputAction::InsertChar(value) => {
-                    state.password.mfa_code.push(value);
-                    state.error = None;
-                    None
-                }
-                LoginTextInputAction::Ignore => None,
-            }
-        }
-        LoginScreen::Qr => match state.key_bindings.login_busy_action(key) {
+        LoginScreen::Busy => match state.key_bindings.login_busy_action(key) {
             LoginBusyAction::Cancel => {
                 state.screen = LoginScreen::ModeSelect;
-                Some(LoginAction::CancelQr)
+                state.in_progress = false;
+                state.status.clear();
+                Some(LoginAction::Cancel)
             }
             LoginBusyAction::Ignore => None,
         },
+        LoginScreen::OauthUrl => match state.key_bindings.login_busy_action(key) {
+            LoginBusyAction::Cancel => {
+                state.screen = LoginScreen::ModeSelect;
+                state.oauth_url = None;
+                Some(LoginAction::Cancel)
+            }
+            LoginBusyAction::Ignore => None,
+        },
+        LoginScreen::MfaSelect | LoginScreen::MfaCode => {
+            // TODO: handle MFA selection/input
+            None
+        }
     }
 }
 
@@ -259,36 +192,29 @@ fn handle_paste(state: &mut LoginState, text: &str) -> Option<LoginAction> {
             append_paste(&mut state.token_input, text);
             state.error = None;
         }
-        LoginScreen::PasswordInput if !state.password.in_progress => {
-            append_paste(active_password_input(state), text);
-            state.error = None;
-        }
-        LoginScreen::MfaCode if !state.password.in_progress => {
-            append_paste(&mut state.password.mfa_code, text);
+        LoginScreen::EmailPassword => {
+            if state.in_progress {
+                return None;
+            }
+            append_paste(active_form_input(state), text);
             state.error = None;
         }
         LoginScreen::ModeSelect
-        | LoginScreen::PasswordInput
         | LoginScreen::MfaSelect
         | LoginScreen::MfaCode
-        | LoginScreen::Qr => {}
+        | LoginScreen::Busy
+        | LoginScreen::OauthUrl => {}
     }
     None
 }
 
-fn active_password_input(state: &mut LoginState) -> &mut String {
-    match state.password.active_field {
-        PasswordField::Login => &mut state.password.login,
-        PasswordField::Password => &mut state.password.password,
+fn active_form_input(state: &mut LoginState) -> &mut String {
+    match state.active_field {
+        FormField::Email => &mut state.email,
+        FormField::Password => &mut state.password,
     }
 }
 
 fn append_paste(target: &mut String, text: &str) {
     target.extend(text.chars().filter(|value| !matches!(value, '\r' | '\n')));
-}
-
-pub(super) fn mfa_supports(challenge: &Option<MfaChallenge>, method: MfaMethod) -> bool {
-    challenge
-        .as_ref()
-        .is_some_and(|challenge| challenge.methods.contains(&method))
 }
